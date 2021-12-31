@@ -35,7 +35,7 @@ extern uint32_t _firmware_crc;			// defined in linker script
 extern "C" void SysTick_Handler(void)
 {
 	CoreSysTick();
-	WatchdogReset();
+	//WatchdogReset();
 }
 
 extern "C" void WWDG_IRQHandler() noexcept __attribute__((naked));
@@ -112,10 +112,161 @@ void AppInit() noexcept
 	HAL_NVIC_DisableIRQ(USART3_IRQn);
 }
 
+#define IS_FLASH_PROGRAM_ADDRESS(addr) (((addr) >= FLASH_BASE) && ((addr) <= FLASH_END))
+#define IS_ALIGNED(addr) (((uint32_t)(addr) & (sizeof(uint32_t)-1)) == 0)
+
+bool isErased(const uint32_t addr, const size_t len) noexcept
+{
+	// Check that the sector really is erased
+	for (uint32_t p = addr; p < addr + len; p += sizeof(uint32_t))
+	{
+		if (*reinterpret_cast<const uint32_t*>(p) != 0xFFFFFFFF)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+uint32_t FlashGetSector(const uint32_t addr) noexcept
+{
+	if (!IS_FLASH_PROGRAM_ADDRESS(addr))
+	{
+		debugPrintf("Bad flash address %x\n", (unsigned)addr);
+		return IAP_BAD_SECTOR;
+	}
+	// Flash memory on STM32F4 is 4 sectors of 16K + 1 sector of 64K + 8 sectors of 128K
+	uint32_t offset = addr - FLASH_BASE;
+	if (offset < 4*0x4000)
+		return offset / 0x4000;
+	else if (offset < 4*0x4000 + 0x10000)
+		return 4;
+	else
+		return offset / 0x20000 + 4;
+}
+
+size_t FlashGetSectorLength(const uint32_t addr) noexcept
+{
+	uint32_t sector = FlashGetSector(addr);
+	if (sector == IAP_BAD_SECTOR)
+		return 0;
+	if (sector < 4)
+		return 0x4000;
+	else if (sector < 5)
+		return 0x10000;
+	else
+		return 0x20000;
+}
+
+bool FlashEraseSector(const uint32_t sector) noexcept
+{
+	WatchdogReset();
+    const irqflags_t flags = IrqSave();
+    FLASH_EraseInitTypeDef eraseInfo;
+    uint32_t SectorError;
+    bool ret = true;
+    eraseInfo.TypeErase = FLASH_TYPEERASE_SECTORS;
+    eraseInfo.Sector = sector;
+    eraseInfo.NbSectors = 1;
+    eraseInfo.VoltageRange = FLASH_VOLTAGE_RANGE_3;
+    HAL_FLASH_Unlock();
+    // Clear pending flags (if any)
+    __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP    | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |\
+                            FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR| FLASH_FLAG_PGSERR);
+    if (HAL_FLASHEx_Erase(&eraseInfo, &SectorError) != HAL_OK)
+    {
+        ret = false;
+    }
+    HAL_FLASH_Lock();
+    IrqRestore(flags);
+	if (!ret)
+	    debugPrintf("Flash erase failed sector %d error %x\n", (int)sector, (unsigned)SectorError);
+	return ret;
+}
+
+bool FlashWrite(const uint32_t addr, const uint8_t *data, const size_t len) noexcept
+{
+	uint32_t *dst = (uint32_t *)addr;
+	uint32_t *src = (uint32_t *)data;
+	uint32_t cnt = len/sizeof(uint32_t);
+	if (!IS_ALIGNED(dst) || !IS_ALIGNED(src) || !IS_ALIGNED(len))
+	{
+		debugPrintf("FlashWrite alignment error dst %x, data %d len %d\n", (unsigned)dst, (unsigned)src, (int)len);
+		return false;
+	}
+    bool ret = true;
+	debugPrintf("Write flash addr %x len %d\n", (unsigned)addr, (int)len);
+	//WatchdogReset();
+    const irqflags_t flags = IrqSave();
+    HAL_FLASH_Unlock();
+    // Clear pending flags (if any)
+    __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP    | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |\
+                            FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR| FLASH_FLAG_PGSERR);
+    for(uint32_t i = 0; i < cnt; i++)
+    {
+        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, (uint32_t) dst, (uint64_t) *src) != HAL_OK)
+        {
+            ret = false;
+            break;
+        }
+        dst++;
+        src++;
+    }
+    HAL_FLASH_Lock();      
+
+    // Re-enable interrupt mode
+    IrqRestore(flags);
+	if (!ret)
+    	debugPrintf("Flash write failed cnt %d\n", (int)dst - addr);
+
+    return ret; 
+}
+
+bool FlashVerify(const uint32_t addr, const uint8_t *data, const size_t len)
+{
+	uint32_t *dst = (uint32_t *)addr;
+	uint32_t *src = (uint32_t *)data;
+	uint32_t cnt = len/sizeof(uint32_t);
+
+    for(uint32_t i = 0; i < cnt; i++)
+    {
+		if (*dst != *src)
+		{
+			debugPrintf("Verify failed address %x %x != %x\n", (unsigned)dst, (unsigned)*dst, (unsigned)*src);
+			return false;
+		}
+		dst++;
+		src++;
+	}
+	return true;
+}
+
+bool FlashEraseAll() noexcept
+{
+	uint32_t addr = IAP_FLASH_START;
+	while (addr <= IAP_FLASH_END)
+	{
+		uint32_t sector = FlashGetSector(addr);
+		uint32_t len = FlashGetSectorLength(addr);
+		debugPrintf("Erasing address %x sector %d length %d\n", (unsigned)addr, (int)sector, (int)len);
+		if (isErased(addr, len))
+			debugPrintf("Allready erased\n");
+		else
+		{
+			if (!FlashEraseSector(sector))
+			{
+				debugPrintf("Erase failed\n");
+				return false;
+			}
+		}
+		addr += len;
+	}
+	return true;
+}
 
 constexpr uint32_t SPITransferTimeout = 500;
-uint8_t rxBuffer[IAP_BUFFER_SIZE];
-uint8_t txBuffer[IAP_BUFFER_SIZE];
+alignas(4) uint8_t rxBuffer[IAP_BUFFER_SIZE];
+alignas(4) uint8_t txBuffer[IAP_BUFFER_SIZE];
 bool transferReadyHigh = false;
 Pin transferReadyPin = PB_3;
 bool dataReceived = false;
@@ -165,12 +316,20 @@ spi_status_t SPITransfer(HardwareSPI *dev, const uint8_t *tx_data, uint8_t *rx_d
 	return SPI_OK;
 }
 
-int TransferData(HardwareSPI *dev)
+int TransferDataToFlash(HardwareSPI *dev)
 {
+#if 1
+	if (!FlashEraseAll())
+	{
+		debugPrintf("Flash erase failed\n");
+		return -1;
+	}
+#endif
 	//SBC expects 0x1a to be sent back
 	memset(txBuffer, 0x1a, sizeof(txBuffer));
 	uint32_t retryCnt = 0;
 	uint32_t blockCnt = 0;
+	uint32_t flashAddr = IAP_FLASH_START;
 	for(;;)
 	{
 		spi_status_t status = SPITransfer(dev, txBuffer, rxBuffer, sizeof(rxBuffer));
@@ -189,12 +348,23 @@ int TransferData(HardwareSPI *dev)
 		}
 		blockCnt++;
 		debugPrintf("Read block %d\n", blockCnt);
+		if (!FlashWrite(flashAddr, rxBuffer, sizeof(rxBuffer)))
+		{
+			debugPrintf("Flash write failed\n");
+			return -1;
+		}
+		if (!FlashVerify(flashAddr, rxBuffer, sizeof(rxBuffer)))
+		{
+			debugPrintf("Flash verify failed\n");
+			return -1;
+		}
+		flashAddr += sizeof(rxBuffer);
 	}
 }
 
 bool ProcessChecksum(HardwareSPI *dev, int cnt) noexcept
 {
-	// wait fir dcs to be ready
+	// wait for dcs to be ready
 	delay(1000);
 	// Read the checksum
 	spi_status_t status = SPITransfer(dev, txBuffer, rxBuffer, sizeof(FlashVerifyRequest));
@@ -234,27 +404,42 @@ bool ProcessChecksum(HardwareSPI *dev, int cnt) noexcept
 	SysTick->LOAD = ((SystemCoreClockFreq/1000) - 1) << SysTick_LOAD_RELOAD_Pos;
 	SysTick->CTRL = (1 << SysTick_CTRL_ENABLE_Pos) | (1 << SysTick_CTRL_TICKINT_Pos) | (1 << SysTick_CTRL_CLKSOURCE_Pos);
 	NVIC_SetPriority (SysTick_IRQn, (1UL << __NVIC_PRIO_BITS) - 1UL); /* set Priority for Systick Interrupt */
-    WatchdogInit();
+    //WatchdogInit();
 	transferReadyHigh = false;
 	digitalWrite(PB_3, transferReadyHigh);
-    IrqEnable(); 
+	Cache::Init();					// initialise the cache and/or the MPU, if applicable to this processor
+	Cache::Disable();
+    IrqEnable();
+	//delay(10000); 
     SERIAL_MAIN_DEVICE.begin(9600);
+	//for(int i = 0; i <1000000; i++)
+	{
 	delay(2000);
-    debugPrintf("IAP running....");
+    debugPrintf("IAP running....\n");
+	}
+	//delay(2000);
+	//FlashEraseAll();
+	//debugPrintf("After erase all\n");
+	//for(int i = 0; i <1000000; i++)
+	//{
+	//	delay(1000);
+	//	debugPrintf("Waiting\n");
+	//}
+	//FlashEraseAll();
+
+
 	// Trap integer divide-by-zero.
 	// We could also trap unaligned memory access, if we change the gcc options to not generate code that uses unaligned memory access.
 	SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;
-
-	Cache::Init();					// initialise the cache and/or the MPU, if applicable to this processor
-	Cache::Disable();
+#if 1
 	HardwareSPI *dev = InitSPI(SSPChannel::SSP2, PB_13, PB_14, PB_15);
-	digitalWrite(PB_3, transferReadyHigh);
-	int blockCnt = TransferData(dev);
+	int blockCnt = TransferDataToFlash(dev);
 	if (blockCnt > 0) ProcessChecksum(dev, blockCnt);
 	debugPrintf("IAP complete\n");
 	transferReadyHigh = false;
 	digitalWrite(PB_3, transferReadyHigh);
 	delay(1000);
+#endif
 	ResetProcessor();
 }
 
