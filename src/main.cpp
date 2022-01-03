@@ -35,7 +35,7 @@ extern uint32_t _firmware_crc;			// defined in linker script
 extern "C" void SysTick_Handler(void)
 {
 	CoreSysTick();
-	//WatchdogReset();
+	WatchdogReset();
 }
 
 extern "C" void WWDG_IRQHandler() noexcept __attribute__((naked));
@@ -161,7 +161,6 @@ size_t FlashGetSectorLength(const uint32_t addr) noexcept
 bool FlashEraseSector(const uint32_t sector) noexcept
 {
 	WatchdogReset();
-    const irqflags_t flags = IrqSave();
     FLASH_EraseInitTypeDef eraseInfo;
     uint32_t SectorError;
     bool ret = true;
@@ -178,7 +177,6 @@ bool FlashEraseSector(const uint32_t sector) noexcept
         ret = false;
     }
     HAL_FLASH_Lock();
-    IrqRestore(flags);
 	if (!ret)
 	    debugPrintf("Flash erase failed sector %d error %x\n", (int)sector, (unsigned)SectorError);
 	return ret;
@@ -196,8 +194,7 @@ bool FlashWrite(const uint32_t addr, const uint8_t *data, const size_t len) noex
 	}
     bool ret = true;
 	debugPrintf("Write flash addr %x len %d\n", (unsigned)addr, (int)len);
-	//WatchdogReset();
-    const irqflags_t flags = IrqSave();
+	WatchdogReset();
     HAL_FLASH_Unlock();
     // Clear pending flags (if any)
     __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP    | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |\
@@ -214,8 +211,6 @@ bool FlashWrite(const uint32_t addr, const uint8_t *data, const size_t len) noex
     }
     HAL_FLASH_Lock();      
 
-    // Re-enable interrupt mode
-    IrqRestore(flags);
 	if (!ret)
     	debugPrintf("Flash write failed cnt %d\n", (int)dst - addr);
 
@@ -318,13 +313,11 @@ spi_status_t SPITransfer(HardwareSPI *dev, const uint8_t *tx_data, uint8_t *rx_d
 
 int TransferDataToFlash(HardwareSPI *dev)
 {
-#if 1
 	if (!FlashEraseAll())
 	{
 		debugPrintf("Flash erase failed\n");
 		return -1;
 	}
-#endif
 	//SBC expects 0x1a to be sent back
 	memset(txBuffer, 0x1a, sizeof(txBuffer));
 	uint32_t retryCnt = 0;
@@ -404,34 +397,19 @@ bool ProcessChecksum(HardwareSPI *dev, int cnt) noexcept
 	SysTick->LOAD = ((SystemCoreClockFreq/1000) - 1) << SysTick_LOAD_RELOAD_Pos;
 	SysTick->CTRL = (1 << SysTick_CTRL_ENABLE_Pos) | (1 << SysTick_CTRL_TICKINT_Pos) | (1 << SysTick_CTRL_CLKSOURCE_Pos);
 	NVIC_SetPriority (SysTick_IRQn, (1UL << __NVIC_PRIO_BITS) - 1UL); /* set Priority for Systick Interrupt */
-    //WatchdogInit();
+    WatchdogInit();
 	transferReadyHigh = false;
 	digitalWrite(PB_3, transferReadyHigh);
 	Cache::Init();					// initialise the cache and/or the MPU, if applicable to this processor
 	Cache::Disable();
     IrqEnable();
-	//delay(10000); 
     SERIAL_MAIN_DEVICE.begin(9600);
-	//for(int i = 0; i <1000000; i++)
-	{
 	delay(2000);
     debugPrintf("IAP running....\n");
-	}
-	//delay(2000);
-	//FlashEraseAll();
-	//debugPrintf("After erase all\n");
-	//for(int i = 0; i <1000000; i++)
-	//{
-	//	delay(1000);
-	//	debugPrintf("Waiting\n");
-	//}
-	//FlashEraseAll();
-
-
 	// Trap integer divide-by-zero.
 	// We could also trap unaligned memory access, if we change the gcc options to not generate code that uses unaligned memory access.
 	SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;
-#if 1
+
 	HardwareSPI *dev = InitSPI(SSPChannel::SSP2, PB_13, PB_14, PB_15);
 	int blockCnt = TransferDataToFlash(dev);
 	if (blockCnt > 0) ProcessChecksum(dev, blockCnt);
@@ -439,7 +417,7 @@ bool ProcessChecksum(HardwareSPI *dev, int cnt) noexcept
 	transferReadyHigh = false;
 	digitalWrite(PB_3, transferReadyHigh);
 	delay(1000);
-#endif
+
 	ResetProcessor();
 }
 
