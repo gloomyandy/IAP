@@ -27,10 +27,6 @@ struct FlashVerifyRequest
 	uint16_t dummy;
 };
 
-#ifndef DEBUG
-extern uint32_t _firmware_crc;			// defined in linker script
-#endif
-
 extern "C" void SysTick_Handler(void)
 {
 	CoreSysTick();
@@ -290,7 +286,7 @@ HardwareSPI *InitSPI(SSPChannel chan, Pin clk, Pin miso, Pin mosi, Pin cs, Pin t
 	}
 	dev->initPins(clk, miso, mosi, NoPin);
 	dev->configureDevice(SPI_MODE_SLAVE, 8, (uint8_t)0, 100000000, false);
-	delay(2000);
+	//delay(2000);
 	return dev;
 }
 
@@ -422,8 +418,11 @@ bool ProcessChecksum(HardwareSPI *dev, int cnt) noexcept
 	const FlashVerifyRequest *request = reinterpret_cast<const FlashVerifyRequest*>(rxBuffer);
 	const uint16_t actualCRC = CRC16((char *)IAP_FLASH_START, request->firmwareLength);
 	debugPrintf("Got verify request flash len %d CRC %x actual CRC %x\n", request->firmwareLength, request->crc16, (unsigned)actualCRC);
-	// send Ok response
-	txBuffer[0] = 0x0c;
+	// send response
+	if (request->crc16 == actualCRC)
+		txBuffer[0] = 0x0c;
+	else
+		txBuffer[0] = 0xff;
 	SPITransfer(dev,txBuffer, rxBuffer, 1, TransferTimeout);
 	return true;
 }
@@ -447,8 +446,10 @@ void Init() noexcept
 	Cache::Init();					// initialise the cache and/or the MPU, if applicable to this processor
 	Cache::Disable();				// Make sure it is off to avoid DMA issues
     IrqEnable();
+#if defined(DEBUG) && DEBUG
     SERIAL_MAIN_DEVICE.begin(9600);
-	//delay(2000);
+	delay(500);
+#endif
     debugPrintf("IAP running....\n");
 	// Trap integer divide-by-zero.
 	// We could also trap unaligned memory access, if we change the gcc options to not generate code that uses unaligned memory access.
@@ -485,8 +486,6 @@ const SBCIAPParams *const GetParams()
 		if (blockCnt > 0) ProcessChecksum(dev, blockCnt);
 		debugPrintf("IAP complete\n");
 		digitalWrite(transferReadyPin, false);
-		//transferReadyHigh = false;
-		//digitalWrite(transferReadyPin, transferReadyHigh);
 	}
 
 	delay(1000);

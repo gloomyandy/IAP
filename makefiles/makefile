@@ -14,7 +14,7 @@ STARTUP_DELAY ?= -DSTARTUP_DELAY=10000
 #Comment out to show compilation commands (verbose)
 V=@
 
-$(info Building RepRapFirmware for STM32F4 based boards:)
+$(info Building RepRapFirmware IAP for STM32F4 based boards:)
 
 OUTPUT_NAME=stm32f4_iap_SBC
 
