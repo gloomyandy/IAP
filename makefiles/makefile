@@ -62,7 +62,7 @@ FLAGS  = -D__$(PROCESSOR)__ -D_XOPEN_SOURCE -DSTM32F4 -DSTM32F407xx -DSTM32F40_4
 FLAGS += -DCORE_M4
 #RTOS + enable mods to RTOS+TCP for RRF
 FLAGS += -DUSBCON -DUSBD_USE_CDC -DUSBD_VID=0x0483 -DTIM_IRQ_PRIO=13 -DUSB_PRODUCT=\"STM32F407ZG\" -DVECT_TAB_SRAM -DVECT_TAB_OFFSET=0x18000
-FLAGS += -DHAL_RRF=1 -DNO_PRINTF_FLOAT
+FLAGS += -DHAL_RRF=1 -DNO_INITIAL_SP -DNO_PRINTF_FLOAT
 FLAGS +=  -Wall -c -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mfp16-format=ieee -mcpu=cortex-m4 -mthumb -ffunction-sections -fdata-sections
 FLAGS += -nostdlib -Wdouble-promotion -fsingle-precision-constant -fstack-usage
 #FLAGS += -Wfloat-equal
