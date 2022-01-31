@@ -13,7 +13,7 @@
 #include <General/SafeVsnprintf.h>
 #include <General/StringFunctions.h>
 #include "iapparams.h"
-
+//#define USB_DEBUG 1
 extern char _end;						// defined in linker script
 extern char _estack;					// defined in linker script
 
@@ -38,32 +38,38 @@ void WWDG_IRQHandler() noexcept
 {
 }
 
+#if USB_DEBUG
 static char formatBuffer[100];
+#endif
 
 // Write message to USB
 void MessageF(const char *fmt, ...) noexcept
 {
+#if USB_DEBUG
 	va_list vargs;
 	va_start(vargs, fmt);
 	SafeVsnprintf(formatBuffer, ARRAY_SIZE(formatBuffer), fmt, vargs);
 	va_end(vargs);
-
-#if 0
-	SERIAL_AUX_DEVICE.print("{\"message\":\"");
-	SERIAL_AUX_DEVICE.print(formatBuffer);
-	SERIAL_AUX_DEVICE.print("\"}\n");
-	delay_ms(10);
-#endif
 	SERIAL_MAIN_DEVICE.print(formatBuffer);
+#endif
 }
 
 extern "C" void debugPrintf(const char *fmt, ...) noexcept
 {
+#if USB_DEBUG
 	va_list vargs;
 	va_start(vargs, fmt);
 	SafeVsnprintf(formatBuffer, ARRAY_SIZE(formatBuffer), fmt, vargs);
 	va_end(vargs);
 	SERIAL_MAIN_DEVICE.print(formatBuffer);
+#endif
+}
+
+void debugFlush()
+{
+#if USB_DEBUG
+	SERIAL_MAIN_DEVICE.flush();
+#endif
 }
 
 #if defined(DEBUG) && DEBUG
@@ -75,13 +81,14 @@ extern "C" void debugPrintf(const char *fmt, ...) noexcept
 [[noreturn]] void OutOfMemoryHandler() noexcept
 {
 	debugPrintf("Out of memory\n");
+	debugFlush();
     for(;;);
 }
 
 void assert_failed(uint8_t *file, uint32_t line)
 {
     debugPrintf("Assert failed file %s line %d\n", file, (int)line);
-	SERIAL_MAIN_DEVICE.flush();
+	debugFlush();
     for(;;);
 }
 
@@ -89,7 +96,7 @@ extern "C" [[noreturn]] void vAssertCalled(uint32_t line, const char *file) noex
 void vAssertCalled(uint32_t line, const char *file) noexcept
 {
 	debugPrintf("ASSERTION FAILED IN %s on LINE %d\n", file, line);
-	SERIAL_MAIN_DEVICE.flush();
+	debugFlush();
     for(;;);
 }
 
@@ -446,8 +453,10 @@ void Init() noexcept
 	Cache::Init();					// initialise the cache and/or the MPU, if applicable to this processor
 	Cache::Disable();				// Make sure it is off to avoid DMA issues
     IrqEnable();
-#if defined(DEBUG) && DEBUG
+#if USB_DEBUG
     SERIAL_MAIN_DEVICE.begin(9600);
+	delay(2000);
+#else
 	delay(500);
 #endif
     debugPrintf("IAP running....\n");
