@@ -15,7 +15,7 @@
 #include "iapparams.h"
 // Define replacement standard library functions
 #include <syscalls.h>
-#define USB_DEBUG 1
+//#define USB_DEBUG 1
 extern char _end;						// defined in linker script
 extern char _estack;					// defined in linker script
 
