@@ -13,12 +13,11 @@
 #include <General/SafeVsnprintf.h>
 #include <General/StringFunctions.h>
 #include "iapparams.h"
-//#define USB_DEBUG 1
-extern char _end;						// defined in linker script
-extern char _estack;					// defined in linker script
-
 // Define replacement standard library functions
 #include <syscalls.h>
+#define USB_DEBUG 1
+extern char _end;						// defined in linker script
+extern char _estack;					// defined in linker script
 
 struct FlashVerifyRequest
 {
@@ -72,11 +71,6 @@ void debugFlush()
 #endif
 }
 
-#if defined(DEBUG) && DEBUG
-#else
-# define debugPrintf(...)		do { } while (false)
-#endif
-
 
 [[noreturn]] void OutOfMemoryHandler() noexcept
 {
@@ -108,13 +102,110 @@ extern "C" void ReleaseMallocMutex() noexcept
 {
 }
 
+void FlushECC(void *ptr, int bytes) noexcept
+{
+	// On some mcus we need to flush write to RAM before doing a reset if we want to read
+	// that data after the reset.
+#if STM32H7
+	uint32_t addr = (uint32_t)ptr;
+	/* Check if accessing AXI SRAM => 64-bit words*/
+	if(addr >= 0x24000000 && addr < 0x24080000){
+		volatile uint64_t temp;
+		volatile uint64_t* flush_ptr = (uint64_t*) (addr & 0xFFFFFFF8);
+		uint64_t *end_ptr = (uint64_t*) ((addr+bytes) & 0xFFFFFFF8) + 1;
+
+		do{
+			temp = *flush_ptr;
+			*flush_ptr = temp;
+			flush_ptr++;
+		}while(flush_ptr != end_ptr);
+	}
+	/* Otherwise 32-bit words */
+	else {
+		volatile uint32_t temp;
+		volatile uint32_t* flush_ptr = (uint32_t*) (addr & 0xFFFFFFFC);
+		uint32_t *end_ptr = (uint32_t*) ((addr+bytes) & 0xFFFFFFFC) + 1;
+
+		do{
+			temp = *flush_ptr;
+			*flush_ptr = temp;
+			flush_ptr++;
+		}while(flush_ptr != end_ptr);
+	}
+#endif
+}
+
+void *GetParamsPtr() noexcept
+{
+	// We use a paramter block just above the top of the stack. Return a pointer to it
+	const uint32_t vtab = SCB->VTOR & SCB_VTOR_TBLOFF_Msk;
+	return reinterpret_cast<void *>(*reinterpret_cast<uint32_t *>(vtab));
+}
+
+bool CheckValid(const void *paramsPtr, uint32_t sig, uint32_t sz) noexcept
+{
+	const uint32_t* const sig1Ptr = reinterpret_cast<const uint32_t*>(paramsPtr);
+	const uint32_t* const sig2Ptr = reinterpret_cast<const uint32_t*>((uint8_t *)paramsPtr + sz - sizeof(uint32_t));
+
+	// check it is valid
+	return (*sig1Ptr == sig && *sig2Ptr == sig);
+}
+
+void InvalidateParams(void *paramsPtr, uint32_t sz)
+{
+	uint32_t* sig1Ptr = reinterpret_cast<uint32_t*>(paramsPtr);
+	uint32_t* sig2Ptr = reinterpret_cast<uint32_t*>((uint8_t *)paramsPtr + sz - sizeof(uint32_t));
+	*sig1Ptr = *sig2Ptr = IAPInvalidSig;
+}
+
+
 void AppInit() noexcept
 {
 	// Some bootloaders leave UASRT3 enabled, make sure it does not cause problems
 	HAL_NVIC_DisableIRQ(USART3_IRQn);
 }
 
+void Init(bool watchdog) noexcept
+{
+	// Make sue Arm ints are enabled
+	__asm volatile(
+					" cpsie i				\n"
+					" cpsie f				\n"
+				);
+	CoreInit();
+	// Initialise systick (needed for delay calls) - CoreNG initialises it in non-interrupt mode
+	SysTick->LOAD = ((SystemCoreClockFreq/1000) - 1) << SysTick_LOAD_RELOAD_Pos;
+	SysTick->CTRL = (1 << SysTick_CTRL_ENABLE_Pos) | (1 << SysTick_CTRL_TICKINT_Pos) | (1 << SysTick_CTRL_CLKSOURCE_Pos);
+	NVIC_SetPriority (SysTick_IRQn, (1UL << __NVIC_PRIO_BITS) - 1UL); /* set Priority for Systick Interrupt */
+	if (watchdog)
+		WatchdogInit();
+
+	// Trap integer divide-by-zero.
+	// We could also trap unaligned memory access, if we change the gcc options to not generate code that uses unaligned memory access.
+	SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;
+	Cache::Init();					// initialise the cache and/or the MPU, if applicable to this processor
+	Cache::Disable();				// Make sure it is off to avoid DMA issues
+	IrqEnable();
+#if USB_DEBUG
+	SERIAL_MAIN_DEVICE.begin(9600);
+	delay(2000);
+#else
+	delay(500);
+#endif
+	debugPrintf("IAP running....\n");
+	// Trap integer divide-by-zero.
+	// We could also trap unaligned memory access, if we change the gcc options to not generate code that uses unaligned memory access.
+	SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;
+}
+
+#if STM32H7
+// We write in 256 bit alignment!
+#define IS_FLASH_ALIGNED(addr) (((uint32_t)(addr) & (32-1)) == 0)
+#else
+// we write with 32bit alignment
 #define IS_FLASH_PROGRAM_ADDRESS(addr) (((addr) >= FLASH_BASE) && ((addr) <= FLASH_END))
+#define IS_FLASH_ALIGNED(addr) (((uint32_t)(addr) & (sizeof(uint32_t)-1)) == 0)
+#endif
 #define IS_ALIGNED(addr) (((uint32_t)(addr) & (sizeof(uint32_t)-1)) == 0)
 
 bool isErased(const uint32_t addr, const size_t len) noexcept
@@ -138,13 +229,17 @@ uint32_t FlashGetSector(const uint32_t addr) noexcept
 		return IAP_BAD_SECTOR;
 	}
 	// Flash memory on STM32F4 is 4 sectors of 16K + 1 sector of 64K + 8 sectors of 128K
-	uint32_t offset = addr - FLASH_BASE;
+	uint32_t offset = addr - FLASH_ADDR;
+#if STM32H7
+	return offset/0x20000;
+#else
 	if (offset < 4*0x4000)
 		return offset / 0x4000;
 	else if (offset < 4*0x4000 + 0x10000)
 		return 4;
 	else
 		return offset / 0x20000 + 4;
+#endif
 }
 
 size_t FlashGetSectorLength(const uint32_t addr) noexcept
@@ -152,12 +247,30 @@ size_t FlashGetSectorLength(const uint32_t addr) noexcept
 	uint32_t sector = FlashGetSector(addr);
 	if (sector == IAP_BAD_SECTOR)
 		return 0;
+#if STM32H7
+	return 0x20000;
+#else
 	if (sector < 4)
 		return 0x4000;
 	else if (sector < 5)
 		return 0x10000;
 	else
 		return 0x20000;
+#endif
+}
+
+void FlashClearError()
+{
+	// Clear pending flags (if any)
+#if STM32H7
+	__HAL_FLASH_CLEAR_FLAG_BANK1(FLASH_FLAG_WRPERR_BANK1 | FLASH_FLAG_PGSERR_BANK1 | FLASH_FLAG_STRBERR_BANK1 | \
+                            		FLASH_FLAG_INCERR_BANK1 | FLASH_FLAG_OPERR_BANK1);
+	__HAL_FLASH_CLEAR_FLAG_BANK2((FLASH_FLAG_WRPERR_BANK2 | FLASH_FLAG_PGSERR_BANK2 | FLASH_FLAG_STRBERR_BANK2 | \
+									FLASH_FLAG_INCERR_BANK2) & 0x7FFFFFFFU);
+#else
+	__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |\
+							FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR| FLASH_FLAG_PGSERR);
+#endif
 }
 
 bool FlashEraseSector(const uint32_t sector) noexcept
@@ -167,13 +280,14 @@ bool FlashEraseSector(const uint32_t sector) noexcept
 	uint32_t SectorError;
 	bool ret = true;
 	eraseInfo.TypeErase = FLASH_TYPEERASE_SECTORS;
+#if STM32H7
+	eraseInfo.Banks = FLASH_BANK_1;
+#endif
 	eraseInfo.Sector = sector;
 	eraseInfo.NbSectors = 1;
 	eraseInfo.VoltageRange = FLASH_VOLTAGE_RANGE_3;
 	HAL_FLASH_Unlock();
-	// Clear pending flags (if any)
-	__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |\
-							FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR| FLASH_FLAG_PGSERR);
+	FlashClearError();
 	if (HAL_FLASHEx_Erase(&eraseInfo, &SectorError) != HAL_OK)
 	{
 		ret = false;
@@ -188,8 +302,7 @@ bool FlashWrite(const uint32_t addr, const uint8_t *data, const size_t len) noex
 {
 	uint32_t *dst = (uint32_t *)addr;
 	uint32_t *src = (uint32_t *)data;
-	uint32_t cnt = len/sizeof(uint32_t);
-	if (!IS_ALIGNED(dst) || !IS_ALIGNED(src) || !IS_ALIGNED(len))
+	if (!IS_FLASH_ALIGNED(dst) || !IS_ALIGNED(src) || !IS_ALIGNED(len))
 	{
 		debugPrintf("FlashWrite alignment error dst %x, data %d len %d\n", (unsigned)dst, (unsigned)src, (int)len);
 		return false;
@@ -198,11 +311,22 @@ bool FlashWrite(const uint32_t addr, const uint8_t *data, const size_t len) noex
 	debugPrintf("Write flash addr %x len %d\n", (unsigned)addr, (int)len);
 	WatchdogReset();
 	HAL_FLASH_Unlock();
-	// Clear pending flags (if any)
-	__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |\
-							FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR| FLASH_FLAG_PGSERR);
-	for(uint32_t i = 0; i < cnt; i++)
+	FlashClearError();
+	uint32_t cnt = 0;
+	while(cnt < len)
 	{
+#if STM32H7
+#define FLASH_TYPEPROGRAM_WORD FLASH_TYPEPROGRAM_FLASHWORD
+		// We write 256 bits == 8 32bit words at a time
+		if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_FLASHWORD, (uint32_t) dst, (uint64_t) src) != HAL_OK)
+		{
+			ret = false;
+			break;
+		}
+		dst += 8;
+		src += 8;
+		cnt += 32;
+#else
 		if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, (uint32_t) dst, (uint64_t) *src) != HAL_OK)
 		{
 			ret = false;
@@ -210,9 +334,10 @@ bool FlashWrite(const uint32_t addr, const uint8_t *data, const size_t len) noex
 		}
 		dst++;
 		src++;
+		cnt += 4;
+#endif
 	}
 	HAL_FLASH_Lock();
-
 	if (!ret)
 		debugPrintf("Flash write failed cnt %d\n", (int)dst - addr);
 
@@ -240,8 +365,8 @@ bool FlashVerify(const uint32_t addr, const uint8_t *data, const size_t len)
 
 bool FlashEraseAll() noexcept
 {
-	uint32_t addr = IAP_FLASH_START;
-	while (addr <= IAP_FLASH_END)
+	uint32_t addr = FirmwareFlashStart;
+	while (addr < FLASH_ADDR + FLASH_SIZE)
 	{
 		uint32_t sector = FlashGetSector(addr);
 		uint32_t len = FlashGetSectorLength(addr);
@@ -261,6 +386,7 @@ bool FlashEraseAll() noexcept
 	return true;
 }
 
+#if IAP_SPI_LOADER
 const uint32_t TransferCompleteDelay = 400;								// DCS waits 500ms when the firmware image has been transferred
 const uint32_t TransferTimeout = 2000;									// How long to wait before timing out
 alignas(4) uint8_t rxBuffer[IAP_BUFFER_SIZE];
@@ -281,19 +407,14 @@ HardwareSPI *InitSPI(SSPChannel chan, Pin clk, Pin miso, Pin mosi, Pin cs, Pin t
 	transferReadyPin = tfrRdy;
 	transferReadyHigh = false;
 	pinMode(transferReadyPin, OUTPUT_LOW);
-	NVIC_SetPriority(DMA1_Stream3_IRQn, NvicPrioritySpi);
-	NVIC_SetPriority(DMA1_Stream4_IRQn, NvicPrioritySpi);
-	NVIC_SetPriority(DMA1_Stream0_IRQn, NvicPrioritySpi);
-	NVIC_SetPriority(DMA1_Stream5_IRQn, NvicPrioritySpi);
 	HardwareSPI *dev = (HardwareSPI*)SPI::getSSPDevice(chan);
 	if (dev == nullptr) 
 	{
 		debugPrintf("Failed to get SPI device %d\n", (int)chan);
 		return nullptr;
 	}
-	dev->initPins(clk, miso, mosi, NoPin);
+	dev->initPins(clk, miso, mosi, NoPin, NvicPrioritySpi);
 	dev->configureDevice(SPI_MODE_SLAVE, 8, (uint8_t)0, 100000000, false);
-	//delay(2000);
 	return dev;
 }
 
@@ -329,7 +450,7 @@ int TransferDataToFlash(HardwareSPI *dev)
 	memset(txBuffer, 0x1a, sizeof(txBuffer));
 	uint32_t retryCnt = 0;
 	uint32_t blockCnt = 0;
-	uint32_t flashAddr = IAP_FLASH_START;
+	uint32_t flashAddr = FirmwareFlashStart;
 	for(;;)
 	{
 		spi_status_t status = SPITransfer(dev, txBuffer, rxBuffer, sizeof(rxBuffer), blockCnt == 0 ? TransferTimeout : TransferCompleteDelay );
@@ -413,8 +534,6 @@ uint16_t CRC16(const char *buffer, size_t length) noexcept
 
 bool ProcessChecksum(HardwareSPI *dev, int cnt) noexcept
 {
-	// wait for dcs to be ready
-	//delay(1000);
 	// Read the checksum
 	spi_status_t status = SPITransfer(dev, txBuffer, rxBuffer, sizeof(FlashVerifyRequest), TransferTimeout);
 	if (status != SPI_OK)
@@ -423,7 +542,7 @@ bool ProcessChecksum(HardwareSPI *dev, int cnt) noexcept
 		return false;
 	}
 	const FlashVerifyRequest *request = reinterpret_cast<const FlashVerifyRequest*>(rxBuffer);
-	const uint16_t actualCRC = CRC16((char *)IAP_FLASH_START, request->firmwareLength);
+	const uint16_t actualCRC = CRC16((char *)FirmwareFlashStart, request->firmwareLength);
 	debugPrintf("Got verify request flash len %d CRC %x actual CRC %x\n", request->firmwareLength, request->crc16, (unsigned)actualCRC);
 	// send response
 	if (request->crc16 == actualCRC)
@@ -434,58 +553,22 @@ bool ProcessChecksum(HardwareSPI *dev, int cnt) noexcept
 	return true;
 }
 
-void Init() noexcept
-{
-	// Make sue Arm ints are enabled
-	__asm volatile(
-					" cpsie i				\n"
-					" cpsie f				\n"
-				);
-	CoreInit();
-	// Initialise systick (needed for delay calls) - CoreNG initialises it in non-interrupt mode
-	SysTick->LOAD = ((SystemCoreClockFreq/1000) - 1) << SysTick_LOAD_RELOAD_Pos;
-	SysTick->CTRL = (1 << SysTick_CTRL_ENABLE_Pos) | (1 << SysTick_CTRL_TICKINT_Pos) | (1 << SysTick_CTRL_CLKSOURCE_Pos);
-	NVIC_SetPriority (SysTick_IRQn, (1UL << __NVIC_PRIO_BITS) - 1UL); /* set Priority for Systick Interrupt */
-	WatchdogInit();
-	// Trap integer divide-by-zero.
-	// We could also trap unaligned memory access, if we change the gcc options to not generate code that uses unaligned memory access.
-	SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;
-	Cache::Init();					// initialise the cache and/or the MPU, if applicable to this processor
-	Cache::Disable();				// Make sure it is off to avoid DMA issues
-	IrqEnable();
-#if USB_DEBUG
-	SERIAL_MAIN_DEVICE.begin(9600);
-	delay(2000);
-#else
-	delay(500);
-#endif
-	debugPrintf("IAP running....\n");
-	// Trap integer divide-by-zero.
-	// We could also trap unaligned memory access, if we change the gcc options to not generate code that uses unaligned memory access.
-	SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;
-}
-
 const SBCIAPParams *const GetParams()
 {
-	// RRF should have placed a parameter structure in an area at the top of RAM just above the start
-	// of the stack.
-	const uint32_t vtab = SCB->VTOR & SCB_VTOR_TBLOFF_Msk;
-	const uint32_t stackTop = *reinterpret_cast<const uint32_t*>(vtab);
-	const SBCIAPParams* const paramsPtr = reinterpret_cast<const SBCIAPParams*>(stackTop);
-
-	// Check it is valid
-	if (paramsPtr->sig1 != SBCIAPParamSig || paramsPtr->sig2 != SBCIAPParamSig)
+	const SBCIAPParams *const paramsPtr = (const SBCIAPParams *const) GetParamsPtr();
+	if (!CheckValid(paramsPtr, SBCIAPParamSig, sizeof(SBCIAPParams)))
 	{
 		debugPrintf("Invalid parameter block sig1 %x sig2 %x\n", (unsigned)paramsPtr->sig1, (unsigned)paramsPtr->sig2);
 		return nullptr;
 	}
-	return paramsPtr;
-}
+	else
+		return paramsPtr;
+}	
 
 // Application entry point
 [[noreturn]] void AppMain() noexcept
 {
-	Init();
+	Init(true);
 
 	const SBCIAPParams *const params = GetParams();
 	if (params != nullptr)
@@ -501,5 +584,269 @@ const SBCIAPParams *const GetParams()
 	ResetProcessor();
 }
 
+#elif IAP_BOOT_LOADER
+
+
+#include <integer.h>
+#include <ff.h>
+#include <sd_mmc.h>
+#include <HardwareSDIO.h>
+
+
+typedef struct {
+    SSPChannel device;
+    Pin pins[6];
+} SDCardConfig;
+
+// These are our known SD card configurations
+static constexpr SDCardConfig SDCardConfigs[] = {
+    {SSP1, {PA_5, PA_6, PB_5, PA_4, NoPin, NoPin}}, // SKR Pro
+    {SSP1, {PA_5, PA_6, PA_7, PA_4, NoPin, NoPin}}, // GTR
+    {SSPSDIO, {PC_8, PC_9, PC_10, PC_11, PC_12, PD_2}}, // Fly/SDIO
+    {SSP3, {PC_10, PC_11, PC_12, PC_9, NoPin, NoPin}}, // MKS?
+    {SSP3, {PC_10, PC_11, PC_12, PA_15, NoPin, NoPin}}, // BTT BX
+};
+
+static bool MountSDCard(uint32_t config, FATFS *fs)
+{
+    const SDCardConfig *conf = &SDCardConfigs[config];
+    if (conf->device != SSPSDIO)
+    {
+        SPI::getSSPDevice(conf->device)->initPins(conf->pins[0], conf->pins[1], conf->pins[2]);
+        sd_mmc_setSSPChannel(0, conf->device, conf->pins[3]);
+    }
+    else
+    {
+        HardwareSDIO::SDIO1.InitPins(NvicPrioritySDIO);
+        sd_mmc_setSSPChannel(0, conf->device, NoPin);
+    }
+
+    FRESULT rslt= f_mount (fs, "0:", 1);
+    if (rslt == FR_OK)
+    {
+        return true;
+    }
+
+    // mount failed reset things
+    if (conf->device != SSPSDIO)
+        ((HardwareSPI *)(SPI::getSSPDevice(conf->device)))->disable();
+    sd_mmc_setSSPChannel(0, SSPNONE, NoPin);
+    return false;
+}    
+
+BOOTIAPParams *const GetParams()
+{
+	BOOTIAPParams *const paramsPtr = (BOOTIAPParams *const) GetParamsPtr();
+	if (!CheckValid(paramsPtr, BOOTIAPParamSig, sizeof(BOOTIAPParams)))
+		return nullptr;
+	else
+		return paramsPtr;
+}
+
+void SetParams(uint32_t val)
+{
+	BOOTIAPParams * const paramsPtr = (BOOTIAPParams *const) GetParamsPtr();
+	paramsPtr->sig1 = BOOTIAPParamSig;
+	paramsPtr->sig2 = BOOTIAPParamSig;
+	paramsPtr->cmd = val;
+	FlushECC(paramsPtr, sizeof(BOOTIAPParams));
+}
+
+// Execute the main firmware we call this just after a processor reset
+// so pretty everything is in the default state.
+[[noreturn]] void StartFirmware()
+{
+	// Modify vector table location
+	__DSB();
+	__ISB();
+	SCB->VTOR = FirmwareFlashStart & SCB_VTOR_TBLOFF_Msk;
+	__DSB();
+	__ISB();
+
+	__asm volatile ("mov r3, %0" : : "r" (FirmwareFlashStart) : "r3");
+
+	__asm volatile ("ldr r1, [r3]");
+	__asm volatile ("msr msp, r1");
+	__asm volatile ("mov sp, r1");
+
+	__asm volatile ("isb");
+
+	__asm volatile ("ldr r1, [r3, #4]");
+	__asm volatile ("orr r1, r1, #1");
+	__asm volatile ("bx r1");
+
+	// This point is unreachable, but gcc doesn't seem to know that
+	for (;;) { }
+}
+
+
+// Check that we have valid firmware.
+bool CheckValidFirmware(const DeviceVectors * const vectors)
+{
+	if (   reinterpret_cast<uint32_t>(vectors->pfnReset_Handler) < FirmwareFlashStart
+		|| reinterpret_cast<uint32_t>(vectors->pfnReset_Handler) >= FLASH_ADDR + FLASH_SIZE
+		|| reinterpret_cast<uint32_t>(vectors->pvStack) < IRAM_ADDR
+		|| reinterpret_cast<uint32_t>(vectors->pvStack) > IRAM_ADDR + IRAM_SIZE
+//		|| reinterpret_cast<uint32_t>(vectors->pvReservedM9) < FirmwareFlashStart
+//		|| reinterpret_cast<uint32_t>(vectors->pvReservedM9) > FirmwareFlashStart + FLASH_SIZE - 4
+	   )
+	{
+		return false;
+	}
+
+#if 0
+	// Fetch the CRC-32 from the file
+	const uint32_t *crcAddr = (const uint32_t*)(vectors->pvReservedM9);
+	const uint32_t storedCRC = *crcAddr;
+
+	// Compute the CRC-32 of the file
+#if SAME5x
+	DMAC->CRCCTRL.reg = DMAC_CRCCTRL_CRCBEATSIZE_WORD | DMAC_CRCCTRL_CRCSRC_DISABLE | DMAC_CRCCTRL_CRCPOLY_CRC32;	// disable the CRC unit
+#elif SAMC21
+	DMAC->CTRL.bit.CRCENABLE = 0;
+#else
+# error Unsupported processor
+#endif
+	DMAC->CRCCHKSUM.reg = 0xFFFFFFFF;
+	DMAC->CRCCTRL.reg = DMAC_CRCCTRL_CRCBEATSIZE_WORD | DMAC_CRCCTRL_CRCSRC_IO | DMAC_CRCCTRL_CRCPOLY_CRC32;
+#if SAMC21
+	DMAC->CTRL.bit.CRCENABLE = 1;
+#endif
+	for (const uint32_t *p = reinterpret_cast<const uint32_t*>(FirmwareFlashStart); p < crcAddr; ++p)
+	{
+		DMAC->CRCDATAIN.reg = *p;
+		asm volatile("nop");
+		asm volatile("nop");
+	}
+
+	DMAC->CRCSTATUS.reg = DMAC_CRCSTATUS_CRCBUSY;
+	asm volatile("nop");
+	const uint32_t actualCRC = DMAC->CRCCHKSUM.reg;
+	if (actualCRC == storedCRC)
+	{
+		return true;
+	}
+
+	String<100> message;
+	message.printf("CRC error: stored %08" PRIx32 ", actual %" PRIx32, storedCRC, actualCRC);
+	ReportError(message.c_str(), ErrorCode::badCRC);
+	return false;
+#endif
+	return true;
+}
+
+
+void AppPreInit() noexcept
+{
+	// Called before clocks configured hardware in default state. Be very careful what we do here!
+
+	// Check to see if we should try and start the main firmware
+	BOOTIAPParams *const paramsPtr = GetParams();
+	if (paramsPtr != nullptr && paramsPtr->cmd == BootCmd::ExecFirmware)
+	{
+		// Set things so we check for new firmware if this does not work
+		SetParams(BootCmd::NormalBoot);
+		// Make sure that what we are about jump to looks ok
+		const DeviceVectors * const vectors = reinterpret_cast<const DeviceVectors*>(FirmwareFlashStart);
+		if (CheckValidFirmware(vectors))
+			StartFirmware();
+	}	
+}	
+
+alignas(4) uint8_t ioBuffer[IAP_BUFFER_SIZE];
+
+bool TransferDataToFlash(FIL *imageFile)
+{
+	UINT cnt;
+	// read first part of file and check it is valid
+	FRESULT rslt = f_read(imageFile, ioBuffer, sizeof(ioBuffer), &cnt);
+	if (rslt != FR_OK || cnt != sizeof(ioBuffer))
+	{
+		debugPrintf("Initial read failed rslt %d cnt %u\n", rslt, cnt);
+		return false;
+	}
+	if (!CheckValidFirmware((const DeviceVectors * const) ioBuffer))
+	{
+		debugPrintf("Invalid firmware image\n");
+		return false;
+	}
+	// we have what looks like a good image
+	if (!FlashEraseAll())
+	{
+		debugPrintf("Flash erase failed\n");
+		return false;
+	}
+	uint32_t flashAddr = FirmwareFlashStart;
+	do {
+		if (!FlashWrite(flashAddr, ioBuffer, cnt))
+		{
+			debugPrintf("Flash write failed\n");
+			return false;
+		}
+		if (!FlashVerify(flashAddr, ioBuffer, cnt))
+		{
+			debugPrintf("Flash verify failed\n");
+			return false;
+		}
+		debugPrintf("Written %d bytes to address %x\n", cnt, flashAddr);
+		flashAddr += cnt;
+		rslt = f_read(imageFile, ioBuffer, sizeof(ioBuffer), &cnt);
+		if (rslt != FR_OK)
+		{
+			debugPrintf("Read failed rslt %d cnt %u\n", rslt, cnt);
+			return false;
+		}
+
+	} while (cnt > 0);
+	debugPrintf("Flash complete\n");
+	return true;
+}
+
+// Application entry point
+[[noreturn]] void AppMain() noexcept
+{
+	FIL imageFile;
+    FATFS fs;
+#if STM32H7
+	alignas(4) static uint8_t sectorBuffer[512];
+	fs.win = sectorBuffer;
+# endif
+
+	Init(false);
+	const DeviceVectors * const vectors = reinterpret_cast<const DeviceVectors*>(FirmwareFlashStart);
+	if (CheckValidFirmware(vectors))
+		debugPrintf("Current firmware is valid\n");
+	else
+		debugPrintf("Current firmware is not valid\n");
+	if (MountSDCard(SDTYPE, &fs))
+	{
+		debugPrintf("Mounted SD card\n");
+		if (f_open(&imageFile, firmwarePath, FA_READ) == FR_OK)
+		{
+			debugPrintf("Opened image file\n");
+			bool transferOk = TransferDataToFlash(&imageFile);
+			f_close(&imageFile);
+			// rename the file so we don't do this again
+			f_unlink((transferOk ? goodFirmwarePath : badFirmwarePath));
+			f_rename(firmwarePath, (transferOk ? goodFirmwarePath : badFirmwarePath));
+		}
+		else
+			debugPrintf("Image file not found\n");
+		f_unmount("0:");
+
+	}
+	else
+		debugPrintf("Failed to mount SD card\n");
+	SetParams(BootCmd::ExecFirmware);
+	debugPrintf("rebooting....\n");
+#if USB_DEBUG
+	delay(2000);
+#endif
+	ResetProcessor();
+}
+
+#else
+#error "Unknown build configuration"
+#endif
 
 // End
