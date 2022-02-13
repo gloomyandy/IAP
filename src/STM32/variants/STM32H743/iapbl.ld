@@ -116,6 +116,7 @@ SECTIONS
     _edata = .;        /* define a global symbol at data end */
 
   } >RAM_D1 AT> FLASH
+  _firmware_end = _sidata + (_edata - _sdata);
 
   /* Uninitialized data section into "RAM_D1" Ram type memory */
   . = ALIGN(4);
@@ -144,23 +145,23 @@ SECTIONS
     . = ALIGN(8);
   } >RAM_D1
 
- 	.ram_nocache2 (NOLOAD) :
-	{
-        . = ALIGN(4);
-        _szero_nocache2 = .;
-		*(.ram_nocache2 .ram_nocache2.*)
-        . = ALIGN(4);
-        _ezero_nocache2 = .;
+  .ram_nocache2 (NOLOAD) :
+  {
+    . = ALIGN(4);
+    _szero_nocache2 = .;
+    *(.ram_nocache2 .ram_nocache2.*)
+    . = ALIGN(4);
+    _ezero_nocache2 = .;
  	} >RAM_D1NC
 
  	.ram_nocache (NOLOAD) :
-	{
-        . = ALIGN(4);
-        _szero_nocache = .;
-		*(.CanMessage .CanMessage.*)
-		*(.ram_nocache .ram_nocache.*)
-        . = ALIGN(4);
-        _ezero_nocache = .;
+  {
+    . = ALIGN(4);
+    _szero_nocache = .;
+    *(.CanMessage .CanMessage.*)
+    *(.ram_nocache .ram_nocache.*)
+    . = ALIGN(4);
+    _ezero_nocache = .;
  	} >RAM_D2
 
   /* Remove information from the compiler libraries */
@@ -178,5 +179,6 @@ SECTIONS
   PROVIDE(_nocache2_ram_end = ORIGIN(RAM_D1NC) + LENGTH(RAM_D1NC));
   /* We reserve a small area at the top of the stack for communications */
   PROVIDE(_estack = ORIGIN(RAM_D1) + LENGTH(RAM_D1) - 64);
+  PROVIDE(_firmware_crc = _firmware_end);
 
 }

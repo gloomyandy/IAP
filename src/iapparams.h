@@ -17,13 +17,14 @@ typedef struct{
 constexpr uint32_t BOOTIAPParamSig = 0xB0010001;
 typedef struct{
     uint32_t sig1;
-    uint32_t cmd;
+    uint32_t state;
     uint32_t sig2;
 } BOOTIAPParams;
 
 typedef enum {
-    NormalBoot,
-    ExecFirmware
-} BootCmd;
+    LoadFirmware,
+    ExecFirmware,
+    FirmwareRunning
+} BootState;
 
 #endif

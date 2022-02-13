@@ -138,6 +138,7 @@ SECTIONS
   _sidata = .;
   _sdata = .;        /* create a global symbol at data start */
   _edata = .;        /* define a global symbol at data end */
+  _firmware_end = _sidata + (_edata - _sdata);
 
   _siccmram = LOADADDR(.ccmram);
 
@@ -190,6 +191,7 @@ SECTIONS
     * size of stack_dummy section */
   __StackTop = ORIGIN(RAM) + LENGTH(RAM) - 64;	/* the 64 is to make room for the firmware filename */
   PROVIDE(_estack = __StackTop);
+  PROVIDE(_firmware_crc = _firmware_end);
 
   /* Remove information from the standard libraries */
   /DISCARD/ :

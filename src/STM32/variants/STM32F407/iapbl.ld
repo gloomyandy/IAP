@@ -15,10 +15,10 @@ _Min_Stack_Size = 0x400;; /* required amount of stack */
 /* Specify the memory areas */
 MEMORY
 {
-CODE_FLASH (xr) : ORIGIN = 0x80000000, LENGTH = 32K
+CODE_FLASH (xr) : ORIGIN = 0x08000000, LENGTH = 32K
 RAM (xrw)       : ORIGIN = 0x20000000, LENGTH = 96K
 
-CCMRAM (rw)     : ORIGIN = 0x10000000, LENGTH = 64K
+CCMRAM (rw)      : ORIGIN = 0x10000000, LENGTH = 64K
 }
 
 /* Define output sections */
@@ -55,9 +55,7 @@ SECTIONS
     . = ALIGN(4);
     *(.rodata)         /* .rodata sections (constants, strings, etc.) */
     *(.rodata*)        /* .rodata* sections (constants, strings, etc.) */
-    *(.data)           /* .data sections */
-    *(.data*)          /* .data* sections */
-  . = ALIGN(4);
+    . = ALIGN(4);
   } >CODE_FLASH
 
   .ARM.extab   : { *(.ARM.extab* .gnu.linkonce.armextab.*) } >CODE_FLASH
@@ -90,8 +88,20 @@ SECTIONS
 
   /* used by the startup to initialize data */
   _sidata = .;
-  _sdata = .;        /* create a global symbol at data start */
-  _edata = .;        /* define a global symbol at data end */
+
+  /* Initialized data sections goes into RAM, load LMA copy after code */
+  .data :
+  {
+    . = ALIGN(4);
+    _sdata = .;        /* create a global symbol at data start */
+    *(.data)           /* .data sections */
+    *(.data*)          /* .data* sections */
+
+    . = ALIGN(4);
+    _edata = .;        /* define a global symbol at data end */
+  } >RAM AT> CODE_FLASH
+
+  _firmware_end = _sidata + (_edata - _sdata);
 
   _siccmram = LOADADDR(.ccmram);
 
@@ -111,7 +121,6 @@ SECTIONS
     . = ALIGN(4);
     _eccmram = .;       /* create a global symbol at ccmram end */
   } >CCMRAM
-
 
   /* Uninitialized data section */
   . = ALIGN(4);
@@ -144,6 +153,7 @@ SECTIONS
     * size of stack_dummy section */
   __StackTop = ORIGIN(RAM) + LENGTH(RAM) - 64;	/* the 64 is to make room for the firmware filename */
   PROVIDE(_estack = __StackTop);
+  PROVIDE(_firmware_crc = _firmware_end);
 
   /* Remove information from the standard libraries */
   /DISCARD/ :

@@ -18,13 +18,9 @@
 //#define USB_DEBUG 1
 extern char _end;						// defined in linker script
 extern char _estack;					// defined in linker script
-
-struct FlashVerifyRequest
-{
-	uint32_t firmwareLength;
-	uint16_t crc16;
-	uint16_t dummy;
-};
+// This is the string that identifies the board type and firmware version, that the vector at 0x20 points to.
+// The characters after the last space must be the firmware version in standard format, e.g. "3.3.0" or "3.4.0beta4". The firmware build date/time is not included.
+extern const char VersionText[] = FIRMWARE_NAME " version " VERSION;
 
 extern "C" void SysTick_Handler(void)
 {
@@ -141,23 +137,6 @@ void *GetParamsPtr() noexcept
 	const uint32_t vtab = SCB->VTOR & SCB_VTOR_TBLOFF_Msk;
 	return reinterpret_cast<void *>(*reinterpret_cast<uint32_t *>(vtab));
 }
-
-bool CheckValid(const void *paramsPtr, uint32_t sig, uint32_t sz) noexcept
-{
-	const uint32_t* const sig1Ptr = reinterpret_cast<const uint32_t*>(paramsPtr);
-	const uint32_t* const sig2Ptr = reinterpret_cast<const uint32_t*>((uint8_t *)paramsPtr + sz - sizeof(uint32_t));
-
-	// check it is valid
-	return (*sig1Ptr == sig && *sig2Ptr == sig);
-}
-
-void InvalidateParams(void *paramsPtr, uint32_t sz)
-{
-	uint32_t* sig1Ptr = reinterpret_cast<uint32_t*>(paramsPtr);
-	uint32_t* sig2Ptr = reinterpret_cast<uint32_t*>((uint8_t *)paramsPtr + sz - sizeof(uint32_t));
-	*sig1Ptr = *sig2Ptr = IAPInvalidSig;
-}
-
 
 void AppInit() noexcept
 {
@@ -387,6 +366,12 @@ bool FlashEraseAll() noexcept
 }
 
 #if IAP_SPI_LOADER
+struct FlashVerifyRequest
+{
+	uint32_t firmwareLength;
+	uint16_t crc16;
+	uint16_t dummy;
+};
 const uint32_t TransferCompleteDelay = 400;								// DCS waits 500ms when the firmware image has been transferred
 const uint32_t TransferTimeout = 2000;									// How long to wait before timing out
 alignas(4) uint8_t rxBuffer[IAP_BUFFER_SIZE];
@@ -556,7 +541,7 @@ bool ProcessChecksum(HardwareSPI *dev, int cnt) noexcept
 const SBCIAPParams *const GetParams()
 {
 	const SBCIAPParams *const paramsPtr = (const SBCIAPParams *const) GetParamsPtr();
-	if (!CheckValid(paramsPtr, SBCIAPParamSig, sizeof(SBCIAPParams)))
+	if (paramsPtr->sig1 != SBCIAPParamSig || paramsPtr->sig2 != SBCIAPParamSig)
 	{
 		debugPrintf("Invalid parameter block sig1 %x sig2 %x\n", (unsigned)paramsPtr->sig1, (unsigned)paramsPtr->sig2);
 		return nullptr;
@@ -632,12 +617,12 @@ static bool MountSDCard(uint32_t config, FATFS *fs)
         ((HardwareSPI *)(SPI::getSSPDevice(conf->device)))->disable();
     sd_mmc_setSSPChannel(0, SSPNONE, NoPin);
     return false;
-}    
+}
 
 BOOTIAPParams *const GetParams()
 {
-	BOOTIAPParams *const paramsPtr = (BOOTIAPParams *const) GetParamsPtr();
-	if (!CheckValid(paramsPtr, BOOTIAPParamSig, sizeof(BOOTIAPParams)))
+	BOOTIAPParams *const paramsPtr =  (BOOTIAPParams *const) GetParamsPtr();
+	if (paramsPtr->sig1 != BOOTIAPParamSig || paramsPtr->sig2 != BOOTIAPParamSig)
 		return nullptr;
 	else
 		return paramsPtr;
@@ -645,10 +630,10 @@ BOOTIAPParams *const GetParams()
 
 void SetParams(uint32_t val)
 {
-	BOOTIAPParams * const paramsPtr = (BOOTIAPParams *const) GetParamsPtr();
+	BOOTIAPParams *const paramsPtr =  (BOOTIAPParams *const) GetParamsPtr();
 	paramsPtr->sig1 = BOOTIAPParamSig;
 	paramsPtr->sig2 = BOOTIAPParamSig;
-	paramsPtr->cmd = val;
+	paramsPtr->state = val;
 	FlushECC(paramsPtr, sizeof(BOOTIAPParams));
 }
 
@@ -739,13 +724,12 @@ bool CheckValidFirmware(const DeviceVectors * const vectors)
 void AppPreInit() noexcept
 {
 	// Called before clocks configured hardware in default state. Be very careful what we do here!
-
 	// Check to see if we should try and start the main firmware
 	BOOTIAPParams *const paramsPtr = GetParams();
-	if (paramsPtr != nullptr && paramsPtr->cmd == BootCmd::ExecFirmware)
+	if (paramsPtr != nullptr && paramsPtr->state == BootState::ExecFirmware)
 	{
 		// Set things so we check for new firmware if this does not work
-		SetParams(BootCmd::NormalBoot);
+		SetParams(BootState::FirmwareRunning);
 		// Make sure that what we are about jump to looks ok
 		const DeviceVectors * const vectors = reinterpret_cast<const DeviceVectors*>(FirmwareFlashStart);
 		if (CheckValidFirmware(vectors))
@@ -837,7 +821,7 @@ bool TransferDataToFlash(FIL *imageFile)
 	}
 	else
 		debugPrintf("Failed to mount SD card\n");
-	SetParams(BootCmd::ExecFirmware);
+	SetParams(BootState::ExecFirmware);
 	debugPrintf("rebooting....\n");
 #if USB_DEBUG
 	delay(2000);

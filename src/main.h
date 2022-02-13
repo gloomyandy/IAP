@@ -7,19 +7,34 @@ const NvicPriority NvicPrioritySDIO = 8;
 #undef FLASH_SIZE
 #endif
 
+#define STRINGIFY2(X) #X
+#define STRINGIFY(X) STRINGIFY2(X)
+
 #if STM32H7
 constexpr size_t FirmwareFlashStart = 0x8020000;
 constexpr size_t FLASH_ADDR = FLASH_BASE;
 // For now we only use one bank of flash
 #undef FLASH_SIZE
 constexpr size_t FLASH_SIZE = 0x0100000;
+#if IAP_SPI_LOADER
+#define FIRMWARE_NAME "STM32H7 SPI loader"
+#else
+#define FIRMWARE_NAME "STM32H7 Boot loader IOMode:" STRINGIFY(SDTYPE)
+#endif
 #elif STM32F4
 constexpr size_t FirmwareFlashStart = 0x8008000;
 constexpr size_t FLASH_ADDR = FLASH_BASE;
 constexpr size_t FLASH_SIZE = (FLASH_END + 1 - FLASH_BASE);
+#if IAP_SPI_LOADER
+#define FIRMWARE_NAME "STM32F4 SPI loader"
+#else
+#define FIRMWARE_NAME "STM32F4 Boot loader IOMode:" STRINGIFY(SDTYPE)
+#endif
 #else
 #error "unknown mcu"
 #endif
+
+#define VERSION "1.0.0"
 
 constexpr uint32_t IAP_BAD_SECTOR = 0xffffffff;
 constexpr size_t IAP_BUFFER_SIZE = 2048;
