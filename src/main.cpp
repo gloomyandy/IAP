@@ -15,9 +15,7 @@
 #include "iapparams.h"
 // Define replacement standard library functions
 #include <syscalls.h>
-//#define USB_DEBUG 1
-extern char _end;						// defined in linker script
-extern char _estack;					// defined in linker script
+#define USB_DEBUG 1
 // This is the string that identifies the board type and firmware version, that the vector at 0x20 points to.
 // The characters after the last space must be the firmware version in standard format, e.g. "3.3.0" or "3.4.0beta4". The firmware build date/time is not included.
 extern const char VersionText[] = FIRMWARE_NAME " version " VERSION;
