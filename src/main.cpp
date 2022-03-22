@@ -15,7 +15,7 @@
 #include "iapparams.h"
 // Define replacement standard library functions
 #include <syscalls.h>
-#define USB_DEBUG 1
+//#define USB_DEBUG 1
 // This is the string that identifies the board type and firmware version, that the vector at 0x20 points to.
 // The characters after the last space must be the firmware version in standard format, e.g. "3.3.0" or "3.4.0beta4". The firmware build date/time is not included.
 extern const char VersionText[] = FIRMWARE_NAME " version " VERSION;
@@ -165,7 +165,7 @@ void Init(bool watchdog) noexcept
 	IrqEnable();
 #if USB_DEBUG
 	SERIAL_MAIN_DEVICE.begin(9600);
-	delay(2000);
+	delay(5000);
 #else
 	delay(500);
 #endif
@@ -184,21 +184,65 @@ void Init(bool watchdog) noexcept
 #define IS_FLASH_ALIGNED(addr) (((uint32_t)(addr) & (sizeof(uint32_t)-1)) == 0)
 #endif
 #define IS_ALIGNED(addr) (((uint32_t)(addr) & (sizeof(uint32_t)-1)) == 0)
+constexpr uint32_t IAP_BAD_SECTOR = 0xffffffff;
 
-bool isErased(const uint32_t addr, const size_t len) noexcept
+static void FlashClearError()
 {
+	// Clear pending flags (if any)
+#if STM32H7
+	__HAL_FLASH_CLEAR_FLAG_BANK1(FLASH_FLAG_WRPERR_BANK1 | FLASH_FLAG_PGSERR_BANK1 | FLASH_FLAG_STRBERR_BANK1 | \
+                            		FLASH_FLAG_INCERR_BANK1 | FLASH_FLAG_OPERR_BANK1 | FLASH_FLAG_SNECCERR_BANK1 | \
+                                    FLASH_IT_DBECCERR_BANK1);
+	__HAL_FLASH_CLEAR_FLAG_BANK2((FLASH_FLAG_WRPERR_BANK2 | FLASH_FLAG_PGSERR_BANK2 | FLASH_FLAG_STRBERR_BANK2 | \
+									FLASH_FLAG_INCERR_BANK2 | FLASH_FLAG_SNECCERR_BANK2 | FLASH_IT_DBECCERR_BANK2) & 0x7FFFFFFFU);
+#else
+	__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |\
+							FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR| FLASH_FLAG_PGSERR);
+#endif
+}
+
+
+static bool isErased(const uint32_t addr, const size_t len) noexcept
+{
+#if STM32H7
+    // On the STM32H7 if the flash has not been correctly erased then simply reading
+    // it can cause a bus fault (due to multiple ECC errors). We avoid this by disaabling
+    // the fault mechanism while checking the flash memory.
+    const irqflags_t flags = IrqSave();
+
+    __set_FAULTMASK(1);
+    SCB->CCR |= SCB_CCR_BFHFNMIGN_Msk;
+    __DSB();
+    __ISB();
+#endif
+	HAL_FLASH_Unlock();
+	FlashClearError();
+
+    bool blank = true;
 	// Check that the sector really is erased
-	for (uint32_t p = addr; p < addr + len; p += sizeof(uint32_t))
+	for (uint32_t p = addr; p < addr + len && blank; p += sizeof(uint32_t))
 	{
 		if (*reinterpret_cast<const uint32_t*>(p) != 0xFFFFFFFF)
 		{
-			return false;
+			blank = false;
 		}
 	}
-	return true;
+
+	FlashClearError();
+	HAL_FLASH_Lock();
+
+#if STM32H7
+    // restore bus fault logic
+	__set_FAULTMASK(0);
+	SCB->CCR &= ~SCB_CCR_BFHFNMIGN_Msk;
+	__DSB();
+	__ISB();
+	IrqRestore(flags);
+#endif
+	return blank;
 }
 
-uint32_t FlashGetSector(const uint32_t addr) noexcept
+static uint32_t FlashGetSector(const uint32_t addr) noexcept
 {
 	if (!IS_FLASH_PROGRAM_ADDRESS(addr))
 	{
@@ -206,7 +250,8 @@ uint32_t FlashGetSector(const uint32_t addr) noexcept
 		return IAP_BAD_SECTOR;
 	}
 	// Flash memory on STM32F4 is 4 sectors of 16K + 1 sector of 64K + 8 sectors of 128K
-	uint32_t offset = addr - FLASH_ADDR;
+    // on the H7 all sectors are 128Kb
+	uint32_t offset = addr - FLASH_BASE;
 #if STM32H7
 	return offset/0x20000;
 #else
@@ -219,7 +264,7 @@ uint32_t FlashGetSector(const uint32_t addr) noexcept
 #endif
 }
 
-size_t FlashGetSectorLength(const uint32_t addr) noexcept
+static size_t FlashGetSectorLength(const uint32_t addr) noexcept
 {
 	uint32_t sector = FlashGetSector(addr);
 	if (sector == IAP_BAD_SECTOR)
@@ -236,21 +281,7 @@ size_t FlashGetSectorLength(const uint32_t addr) noexcept
 #endif
 }
 
-void FlashClearError()
-{
-	// Clear pending flags (if any)
-#if STM32H7
-	__HAL_FLASH_CLEAR_FLAG_BANK1(FLASH_FLAG_WRPERR_BANK1 | FLASH_FLAG_PGSERR_BANK1 | FLASH_FLAG_STRBERR_BANK1 | \
-                            		FLASH_FLAG_INCERR_BANK1 | FLASH_FLAG_OPERR_BANK1);
-	__HAL_FLASH_CLEAR_FLAG_BANK2((FLASH_FLAG_WRPERR_BANK2 | FLASH_FLAG_PGSERR_BANK2 | FLASH_FLAG_STRBERR_BANK2 | \
-									FLASH_FLAG_INCERR_BANK2) & 0x7FFFFFFFU);
-#else
-	__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |\
-							FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR| FLASH_FLAG_PGSERR);
-#endif
-}
-
-bool FlashEraseSector(const uint32_t sector) noexcept
+static bool FlashEraseSector(const uint32_t sector) noexcept
 {
 	WatchdogReset();
 	FLASH_EraseInitTypeDef eraseInfo;
@@ -258,9 +289,20 @@ bool FlashEraseSector(const uint32_t sector) noexcept
 	bool ret = true;
 	eraseInfo.TypeErase = FLASH_TYPEERASE_SECTORS;
 #if STM32H7
-	eraseInfo.Banks = FLASH_BANK_1;
-#endif
+    if (sector < FLASH_SECTOR_TOTAL)
+    {
+	    eraseInfo.Banks = FLASH_BANK_1;
+        eraseInfo.Sector = sector;
+    }
+    else
+    {
+	    eraseInfo.Banks = FLASH_BANK_2;
+        eraseInfo.Sector = sector - FLASH_SECTOR_TOTAL;
+    }
+    debugPrintf("Erase %d bank %d sector %d\n", sector, eraseInfo.Banks, eraseInfo.Sector);
+#else
 	eraseInfo.Sector = sector;
+#endif
 	eraseInfo.NbSectors = 1;
 	eraseInfo.VoltageRange = FLASH_VOLTAGE_RANGE_3;
 	HAL_FLASH_Unlock();
@@ -275,7 +317,7 @@ bool FlashEraseSector(const uint32_t sector) noexcept
 	return ret;
 }
 
-bool FlashWrite(const uint32_t addr, const uint8_t *data, const size_t len) noexcept
+static bool FlashWrite(const uint32_t addr, const uint8_t *data, const size_t len) noexcept
 {
 	uint32_t *dst = (uint32_t *)addr;
 	uint32_t *src = (uint32_t *)data;
@@ -287,6 +329,7 @@ bool FlashWrite(const uint32_t addr, const uint8_t *data, const size_t len) noex
 	bool ret = true;
 	debugPrintf("Write flash addr %x len %d\n", (unsigned)addr, (int)len);
 	WatchdogReset();
+    bool cacheEnabled = Cache::Disable();
 	HAL_FLASH_Unlock();
 	FlashClearError();
 	uint32_t cnt = 0;
@@ -315,10 +358,42 @@ bool FlashWrite(const uint32_t addr, const uint8_t *data, const size_t len) noex
 #endif
 	}
 	HAL_FLASH_Lock();
+    if (cacheEnabled) Cache::Enable();
 	if (!ret)
-		debugPrintf("Flash write failed cnt %d\n", (int)dst - addr);
+		debugPrintf("Flash write failed cnt %d\n", (int)((int)dst - addr));
 
 	return ret; 
+}
+
+static bool FlashRead(const uint32_t addr, uint8_t *data, const size_t len) noexcept
+{
+#if STM32H7
+    // On the STM32H7 if the flash has not been correctly erased then simply reading
+    // it can cause a bus fault (due to multiple ECC errors). We avoid this by disaabling
+    // the fault mechanism while checking the flash memory.
+    const irqflags_t flags = IrqSave();
+
+    __set_FAULTMASK(1);
+    SCB->CCR |= SCB_CCR_BFHFNMIGN_Msk;
+    __DSB();
+    __ISB();
+#endif
+	HAL_FLASH_Unlock();
+	FlashClearError();
+    // Do the actual read from flash
+    memcpy((void *)data, (void *)addr, len);
+    // Clear any errors
+	FlashClearError();
+	HAL_FLASH_Lock();
+#if STM32H7
+    // restore bus fault logic
+	__set_FAULTMASK(0);
+	SCB->CCR &= ~SCB_CCR_BFHFNMIGN_Msk;
+	__DSB();
+	__ISB();
+	IrqRestore(flags);
+#endif
+    return true;
 }
 
 bool FlashVerify(const uint32_t addr, const uint8_t *data, const size_t len)
