@@ -743,8 +743,8 @@ bool CheckValidFirmware(const DeviceVectors * const vectors)
 {
 	if (   reinterpret_cast<uint32_t>(vectors->pfnReset_Handler) < FirmwareFlashStart
 		|| reinterpret_cast<uint32_t>(vectors->pfnReset_Handler) >= FLASH_ADDR + FLASH_SIZE
-		|| reinterpret_cast<uint32_t>(vectors->pvStack) < IRAM_ADDR
-		|| reinterpret_cast<uint32_t>(vectors->pvStack) > IRAM_ADDR + IRAM_SIZE
+//		|| reinterpret_cast<uint32_t>(vectors->pvStack) < IRAM_ADDR
+//		|| reinterpret_cast<uint32_t>(vectors->pvStack) > IRAM_ADDR + IRAM_SIZE
 //		|| reinterpret_cast<uint32_t>(vectors->pvReservedM9) < FirmwareFlashStart
 //		|| reinterpret_cast<uint32_t>(vectors->pvReservedM9) > FirmwareFlashStart + FLASH_SIZE - 4
 	   )
