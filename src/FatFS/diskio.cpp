@@ -6,7 +6,7 @@
 /*-----------------------------------------------------------------------*/
 //SD :: Modified to work with RRF
 //SD :: Updated for RTOS
-
+#include "ff.h"
 #include "diskio.h"
 #include <stdio.h>
 #include <string.h>
@@ -22,34 +22,34 @@ extern SDCard *_ffs[_DRIVES];
 
 
 /* drv - Physical drive nmuber (0..) */
-DSTATUS disk_initialize (BYTE drv) noexcept
+DSTATUS disk_initialize (BYTE pdrv) noexcept
 {
-	return (DSTATUS)_ffs[drv]->disk_initialize();
+	return (DSTATUS)_ffs[pdrv]->disk_initialize();
 }
 
 /* drv - Physical drive nmuber (0..) */
-DSTATUS disk_status (BYTE drv) noexcept
+DSTATUS disk_status (BYTE pdrv) noexcept
 {
-	return (DSTATUS)_ffs[drv]->disk_status();
+	return (DSTATUS)_ffs[pdrv]->disk_status();
 }
 
 /* drv - Physical drive nmuber (0..) */
 /* buff - Data buffer to store read data */
 /* sector - Sector address (LBA) */
 /* count - Number of sectors to read (1..255) */
-DRESULT disk_read (BYTE drv, BYTE *buff, DWORD sector, BYTE count) noexcept
+DRESULT disk_read (BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) noexcept
 {
     unsigned int retryNumber = 0;
     uint32_t retryDelay = SdCardRetryDelay;
     for(;;)
     {
-        DRESULT res = _ffs[drv]->disk_read(buff, sector, count);
+        DRESULT res = _ffs[pdrv]->disk_read(buff, sector, count);
         if (res == RES_OK) break;
         ++retryNumber;
         if (retryNumber == MaxSdCardTries)
         {
             delay(retryDelay);
-            _ffs[drv]->disk_initialize();
+            _ffs[pdrv]->disk_initialize();
         }           
         if (retryNumber > MaxSdCardTries)
         {
@@ -67,20 +67,20 @@ DRESULT disk_read (BYTE drv, BYTE *buff, DWORD sector, BYTE count) noexcept
 /* sector - Sector address (LBA) */
 /* count - Number of sectors to write (1..255) */
 
-DRESULT disk_write (BYTE drv, const BYTE *buff, DWORD sector, BYTE count) noexcept
+DRESULT disk_write (BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) noexcept
 {
     /* Write the data */
     unsigned int retryNumber = 0;
     uint32_t retryDelay = SdCardRetryDelay;
     for(;;)
     {
-        DRESULT res = _ffs[drv]->disk_write(buff, sector, count);
+        DRESULT res = _ffs[pdrv]->disk_write(buff, sector, count);
         if (res == RES_OK) break;
         ++retryNumber;
         if (retryNumber == MaxSdCardTries)
         {
             delay(retryDelay);
-            _ffs[drv]->disk_initialize();
+            _ffs[pdrv]->disk_initialize();
         }           
         if (retryNumber > MaxSdCardTries)
         {
@@ -97,8 +97,8 @@ DRESULT disk_write (BYTE drv, const BYTE *buff, DWORD sector, BYTE count) noexce
 /* ctrl - Control code */
 /* buff - Buffer to send/receive control data */
 
-DRESULT disk_ioctl (BYTE drv, BYTE ctrl, void *buff) noexcept
+DRESULT disk_ioctl (BYTE pdrv, BYTE ctrl, void *buff) noexcept
 {
     //MutexLocker lock(Tasks::GetSpiMutex());
-    return _ffs[drv]->disk_ioctl(ctrl, buff);
+    return _ffs[pdrv]->disk_ioctl(ctrl, buff);
 }
