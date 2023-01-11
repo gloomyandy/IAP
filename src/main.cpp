@@ -471,8 +471,8 @@ HardwareSPI *InitSPI(SSPChannel chan, Pin clk, Pin miso, Pin mosi, Pin cs, Pin t
 		debugPrintf("Failed to get SPI device %d\n", (int)chan);
 		return nullptr;
 	}
-	dev->initPins(clk, miso, mosi, NoPin, NvicPrioritySpi);
-	dev->configureDevice(SPI_MODE_SLAVE, 8, (uint8_t)0, 100000000, false);
+	dev->initPins(clk, miso, mosi, NvicPrioritySpi);
+	dev->configureDevice(SPI_MODE_SLAVE, 8, (uint8_t)0, 100000000);
 	return dev;
 }
 
