@@ -451,7 +451,7 @@ alignas(4) uint8_t rxBuffer[IAP_BUFFER_SIZE];
 alignas(4) uint8_t txBuffer[IAP_BUFFER_SIZE];
 bool transferReadyHigh = false;
 Pin transferReadyPin = NoPin;
-bool dataReceived = false;
+volatile bool dataReceived = false;
 
 // interrupt handler
 void SpiInterrupt(HardwareSPI *spi) noexcept
@@ -499,11 +499,6 @@ spi_status_t SPITransfer(HardwareSPI *dev, const uint8_t *tx_data, uint8_t *rx_d
 
 int TransferDataToFlash(HardwareSPI *dev)
 {
-	if (!FlashEraseAll())
-	{
-		debugPrintf("Flash erase failed\n");
-		return -1;
-	}
 	//SBC expects 0x1a to be sent back
 	memset(txBuffer, 0x1a, sizeof(txBuffer));
 	uint32_t retryCnt = 0;
@@ -524,6 +519,14 @@ int TransferDataToFlash(HardwareSPI *dev)
 		{
 			debugPrintf("Terminating transfer on error\n");
 			return -1;
+		}
+		if (blockCnt == 0)
+		{
+			if (!FlashEraseAll())
+			{
+				debugPrintf("Flash erase failed\n");
+				return -1;
+			}
 		}
 		blockCnt++;
 		debugPrintf("Read block %d\n", blockCnt);
@@ -637,7 +640,7 @@ const SBCIAPParams *const GetParams()
 		debugPrintf("IAP complete\n");
 		digitalWrite(transferReadyPin, false);
 	}
-
+	debugFlush();
 	delay(1000);
 	ResetProcessor();
 }
