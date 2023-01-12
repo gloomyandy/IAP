@@ -71,7 +71,7 @@ $(info  - Linker Script used: $(LINKER_SCRIPT))
 FLAGS  = -D__$(PROCESSOR)__ -D_XOPEN_SOURCE -DSTM32 -DSTM32F4 -DSTM32F407xx -DSTM32F40_41xxx -DSTM32F407_5ZX -DSTM32F4xx
 #Build config flags
 FLAGS += -D$(CONFIG)=1 -DSDTYPE=$(SDTYPE) $(SPICONFIG)
-FLAGS += -DUSBCON -DUSBD_USE_CDC -DUSB_PRODUCT=\"RepRapFirmware\" $(VECTOR)
+FLAGS += -DSUPPORT_USB=1 -DUSBCON -DUSBD_USE_CDC -DUSB_PRODUCT=\"RepRapFirmware\" $(VECTOR)
 FLAGS += -DHAL_RRF=1 -DNO_PRINTF_FLOAT
 FLAGS +=  -Wall -c -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mfp16-format=ieee -mcpu=cortex-m4 -mthumb -ffunction-sections -fdata-sections
 FLAGS += -nostdlib -Wdouble-promotion -fsingle-precision-constant -fstack-usage
