@@ -27,7 +27,7 @@ constexpr size_t FLASH_SIZE = (FLASH_END + 1 - FLASH_BASE);
 #error "unknown mcu"
 #endif
 
-#define VERSION "1.0.3"
+#define VERSION "1.0.4"
 
 constexpr size_t IAP_BUFFER_SIZE = 2048;
 constexpr char firmwarePath[] = "0:/firmware.bin";
