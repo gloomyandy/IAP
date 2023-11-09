@@ -32,6 +32,7 @@ void WWDG_IRQHandler() noexcept
 }
 
 #if USB_DEBUG
+USBSerial serialUSB;
 static char formatBuffer[100];
 #endif
 
@@ -193,8 +194,10 @@ static void FlashClearError()
 	__HAL_FLASH_CLEAR_FLAG_BANK1(FLASH_FLAG_WRPERR_BANK1 | FLASH_FLAG_PGSERR_BANK1 | FLASH_FLAG_STRBERR_BANK1 | \
                             		FLASH_FLAG_INCERR_BANK1 | FLASH_FLAG_OPERR_BANK1 | FLASH_FLAG_SNECCERR_BANK1 | \
                                     FLASH_IT_DBECCERR_BANK1);
+#if STM32H743xx
 	__HAL_FLASH_CLEAR_FLAG_BANK2((FLASH_FLAG_WRPERR_BANK2 | FLASH_FLAG_PGSERR_BANK2 | FLASH_FLAG_STRBERR_BANK2 | \
 									FLASH_FLAG_INCERR_BANK2 | FLASH_FLAG_SNECCERR_BANK2 | FLASH_IT_DBECCERR_BANK2) & 0x7FFFFFFFU);
+#endif
 #else
 	__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |\
 							FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR| FLASH_FLAG_PGSERR);
@@ -296,8 +299,10 @@ static bool FlashEraseSector(const uint32_t sector) noexcept
     }
     else
     {
+#if STM32H743xx
 	    eraseInfo.Banks = FLASH_BANK_2;
         eraseInfo.Sector = sector - FLASH_SECTOR_TOTAL;
+#endif
     }
     debugPrintf("Erase %d bank %d sector %d\n", sector, eraseInfo.Banks, eraseInfo.Sector);
 #else
@@ -447,8 +452,15 @@ struct FlashVerifyRequest
 };
 const uint32_t TransferCompleteDelay = 400;								// DCS waits 500ms when the firmware image has been transferred
 const uint32_t TransferTimeout = 2000;									// How long to wait before timing out
-alignas(4) uint8_t rxBuffer[IAP_BUFFER_SIZE];
-alignas(4) uint8_t txBuffer[IAP_BUFFER_SIZE];
+#if STM32H7
+# define __nocache		__attribute__((section(".ram_nocache")))
+# define __nocache2		__attribute__((section(".ram_nocache2")))
+#else
+# define __nocache		// nothing
+#endif
+
+__nocache alignas(4) uint8_t rxBuffer[IAP_BUFFER_SIZE];
+__nocache alignas(4) uint8_t txBuffer[IAP_BUFFER_SIZE];
 bool transferReadyHigh = false;
 Pin transferReadyPin = NoPin;
 volatile bool dataReceived = false;
