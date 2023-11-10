@@ -370,6 +370,8 @@ static bool FlashWrite(const uint32_t addr, const uint8_t *data, const size_t le
 	return ret; 
 }
 
+// not currently used
+#if 0
 static bool FlashRead(const uint32_t addr, uint8_t *data, const size_t len) noexcept
 {
 #if STM32H7
@@ -400,6 +402,7 @@ static bool FlashRead(const uint32_t addr, uint8_t *data, const size_t len) noex
 #endif
     return true;
 }
+#endif
 
 bool FlashVerify(const uint32_t addr, const uint8_t *data, const size_t len)
 {

@@ -1,5 +1,9 @@
 /*
 * RRF IAP Memory configuration
+* The IAP runs from RAM memory (so it can update the flash). We place it
+* in the upper part of RAM above statically allocated items used by the
+* firmware. This may overwrite dynamically allocated items but by the point
+* we load the IAP this memory should no longer be in use.
 */
 
 /* Entry Point */
@@ -13,22 +17,18 @@ MEMORY
 {
     DTCMRAM	(xrw)	: ORIGIN = 0x20000000,	LENGTH = 128K
     ITCMRAM	(xrw)	: ORIGIN = 0x00000000,	LENGTH = 64K
+    /* We place the IAP the last 64K of "normal" RAM, note that we use the final 32K of RAM 
+       as nocached file I/O buffers */
     RAM_D1	(xrw)	: ORIGIN = 0x24000000,	LENGTH = 320K - 32K - 64K
-    /* We use the file I/O buffer space for our code */
     CODE_RAM (xr): ORIGIN = 0x24038000,	LENGTH = 64K
     RAM_D2	(xrw)	: ORIGIN = 0x30000000,	LENGTH = 32K
     RAM_D3	(xrw)	: ORIGIN = 0x38000000,	LENGTH = 16K
-    FLASH	(rx)	: ORIGIN = 0x8020000,	LENGTH = 1024K - 128K - 128K
-    /* We currently don't have a bootloader for the Fly H7 board so load us at the start address */
-    /*FLASH	(rx)	: ORIGIN = 0x8000000,	LENGTH = 1024K - 128K*/
-    RESETDATA (rx) : ORIGIN = 0x80E0000, LENGTH = 128K
-
 }
 
 /* Sections */
 SECTIONS
 {
-  /* The startup code into "FLASH" Rom type memory */
+  /* The startup code into RAM */
   .isr_vector :
   {
     . = ALIGN(4);
@@ -36,7 +36,7 @@ SECTIONS
     . = ALIGN(4);
   } >CODE_RAM
 
-  /* The program code and other data into "FLASH" Rom type memory */
+  /* The program code and other data into RAM */
   .text :
   {
     __etext_start = .;
@@ -54,7 +54,7 @@ SECTIONS
     _etext = .;        /* define a global symbols at end of code */
   } >CODE_RAM
 
-  /* Constant data into "FLASH" Rom type memory */
+  /* Constant data into RAM */
   .rodata :
   {
     . = ALIGN(4);
