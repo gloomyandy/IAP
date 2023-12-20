@@ -21,6 +21,8 @@ MEMORY
        as nocached file I/O buffers */
     RAM_D1	(xrw)	: ORIGIN = 0x24000000,	LENGTH = 320K - 32K - 64K
     CODE_RAM (xr): ORIGIN = 0x24038000,	LENGTH = 64K
+    /* We need buffer space that is not cached in D1 for use with SDIO and DMA */
+    RAM_D1NC (xrw): ORIGIN = 0x24048000,	LENGTH = 32K
     RAM_D2	(xrw)	: ORIGIN = 0x30000000,	LENGTH = 32K
     RAM_D3	(xrw)	: ORIGIN = 0x38000000,	LENGTH = 16K
 }
@@ -141,6 +143,15 @@ SECTIONS
     . = ALIGN(8);
   } >RAM_D1
 
+  .ram_nocache2 (NOLOAD) :
+  {
+    . = ALIGN(4);
+    _szero_nocache2 = .;
+    *(.ram_nocache2 .ram_nocache2.*)
+    . = ALIGN(4);
+    _ezero_nocache2 = .;
+  } >RAM_D1NC
+
   .ram_nocache (NOLOAD) :
   {
     . = ALIGN(4);
@@ -162,6 +173,8 @@ SECTIONS
   .ARM.attributes 0 : { *(.ARM.attributes) }
   PROVIDE(_nocache_ram_start = ORIGIN(RAM_D2));
   PROVIDE(_nocache_ram_end = ORIGIN(RAM_D2) + LENGTH(RAM_D2));
+  PROVIDE(_nocache2_ram_start = ORIGIN(RAM_D1NC));
+  PROVIDE(_nocache2_ram_end = ORIGIN(RAM_D1NC) + LENGTH(RAM_D1NC));
   /* Provide system stack location */
   __StackTop = ORIGIN(RAM_D1) + LENGTH(RAM_D1) - 64;	/* the 64 is to make room for the firmware filename */
   PROVIDE(_estack = __StackTop);
