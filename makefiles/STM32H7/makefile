@@ -23,7 +23,7 @@ $(info  - Variant: $(VARIANT))
 ifeq ($(VARIANT),STM32H723)
 	BASE_OUTPUT_NAME=stm32h723
 else
-	BASE_OUTPUT_NAME=stm32h7
+	BASE_OUTPUT_NAME=stm32h743
 endif
 
 ifeq ($(CONFIG),IAP_BOOT_LOADER)
