@@ -20,12 +20,10 @@ V=@
 $(info Building RepRapFirmware IAP for STM32F4 based boards:)
 
 ifeq ($(CONFIG),IAP_BOOT_LOADER)
-OUTPUT_NAME=stm32f4_bootloader_$(SDTYPE)
 SPICONFIG ?= -DUSE_SDIO=1
 LDNAME=iapbl
 VECTOR= -DVECT_TAB_OFFSET=0x0000
 else
-OUTPUT_NAME=stm32f4_iap_SBC
 SPICONFIG =-DUSE_SSP2=1 -DUSE_SSP3=1
 LDNAME=iapspi
 SDTYPE=0
@@ -44,7 +42,7 @@ SIZE    = $(GCC_PATH)arm-none-eabi-size
 
 MKDIR = mkdir -p
 
-$(info  - MAKE_DIR: $(MAKE_DIR))
+$(info - MAKE_DIR: $(MAKE_DIR))
 include $(MAKE_DIR)/Core.mk
 include $(MAKE_DIR)/RRFLibraries.mk
 include $(MAKE_DIR)/RepRapLibc.mk
@@ -66,8 +64,8 @@ LINKER_SCRIPT_BASE = $(IAP_DIR)/src/STM32/variants/STM32F407/
 
 #Path to the linker Script
 LINKER_SCRIPT  = $(LINKER_SCRIPT_BASE)$(LDNAME).ld
-$(info  - Linker Script used: $(LINKER_SCRIPT))
-
+$(info - Linker Script used: $(LINKER_SCRIPT))
+$(info - Output name: $(OUTPUT_NAME))
 
 #Flags common for Core in c and c++
 FLAGS  = -D__$(PROCESSOR)__ -D_XOPEN_SOURCE -DSTM32 -DSTM32F4 -DSTM32F407xx -DSTM32F40_41xxx -DSTM32F407_5ZX -DSTM32F4xx

@@ -20,19 +20,11 @@ V=@
 $(info Building RepRapFirmware IAP for STM32H7 based boards:)
 $(info  - Variant: $(VARIANT))
 
-ifeq ($(VARIANT),STM32H723)
-	BASE_OUTPUT_NAME=stm32h723
-else
-	BASE_OUTPUT_NAME=stm32h743
-endif
-
 ifeq ($(CONFIG),IAP_BOOT_LOADER)
-OUTPUT_NAME=$(BASE_OUTPUT_NAME)_bootloader_$(SDTYPE)
 SPICONFIG ?= -DUSE_SDIO=1
 LDNAME=iapbl
 VECTOR= -DVECT_TAB_OFFSET=0x0000
 else
-OUTPUT_NAME=$(BASE_OUTPUT_NAME)_iap_SBC
 SPICONFIG = -DUSE_SSP1=1 -DUSE_SSP2=1 -DUSE_SSP3=1
 SDTYPE=0
 LDNAME=iapspi
@@ -78,7 +70,7 @@ LINKER_SCRIPT_BASE = $(IAP_DIR)/src/STM32/variants/$(VARIANT)/
 #Path to the linker Script
 LINKER_SCRIPT  = $(LINKER_SCRIPT_BASE)$(LDNAME).ld
 $(info  - Linker Script used: $(LINKER_SCRIPT))
-
+$(info - Output name: $(OUTPUT_NAME))
 
 #Flags common for Core in c and c++
 FLAGS  = -D__$(PROCESSOR)__ -D_XOPEN_SOURCE -DSTM32 -DSTM32H7 -D$(VARIANT)xx -DSTM32H7xx
