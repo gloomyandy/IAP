@@ -1,4 +1,4 @@
-#include <USBSerial.h>
+#include <SerialCDC.h>
 #define SERIAL_MAIN_DEVICE  serialUSB
 const NvicPriority NvicPrioritySpi = 8;
 const NvicPriority NvicPrioritySDIO = 8;

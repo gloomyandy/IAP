@@ -32,7 +32,7 @@ void WWDG_IRQHandler() noexcept
 }
 
 #if USB_DEBUG
-USBSerial serialUSB;
+SerialCDC serialUSB;
 static char formatBuffer[100];
 #endif
 
