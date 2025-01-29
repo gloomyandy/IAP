@@ -15,9 +15,20 @@
 #include "iapparams.h"
 // Define replacement standard library functions
 #include <syscalls.h>
-//#define USB_DEBUG 1
+#define USB_DEBUG 1
+#ifndef IAP_BOOT_LOADER
+#define IAP_BOOT_LOADER 1
+#endif
+// Diagnostic LED if available on this board
+#ifndef LED_PIN
+#  define LED_PIN NoPin
+#endif
+#ifndef LED_ON
+#  define LED_ON 1
+#endif
+
 // This is the string that identifies the board type and firmware version, that the vector at 0x20 points to.
-// The characters after the last space must be the firmware version in standard format, e.g. "3.3.0" or "3.4.0beta4". The firmware build date/time is not included.
+// The characters after the last space must be the firmware version in standard format, e.g. "3.3.0" or "3.4.0beta.4". The firmware build date/time is not included.
 extern const char VersionText[] = FIRMWARE_NAME " version " VERSION;
 
 extern "C" void SysTick_Handler(void)
@@ -66,6 +77,13 @@ void debugFlush()
 #endif
 }
 
+static inline void WriteLed(uint8_t ledNumber, bool turnOn)
+{
+	if (LED_PIN != NoPin)
+	{
+		digitalWrite(LED_PIN, turnOn ? LED_ON : !LED_ON);
+	}
+}
 
 [[noreturn]] void OutOfMemoryHandler() noexcept
 {
@@ -171,6 +189,11 @@ void Init(bool watchdog) noexcept
 	delay(500);
 #endif
 	debugPrintf("IAP running....\n");
+	// enable diag led
+	if (LED_PIN != NoPin)
+	{
+		pinMode(LED_PIN, (LED_ON) ? OUTPUT_LOW : OUTPUT_HIGH);
+	}
 	// Trap integer divide-by-zero.
 	// We could also trap unaligned memory access, if we change the gcc options to not generate code that uses unaligned memory access.
 	SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;
@@ -667,94 +690,15 @@ const SBCIAPParams *const GetParams()
 #include <ff.h>
 #include <sd_mmc.h>
 #include <HardwareSDIO.h>
+#include <CAN/CanInterface.h>
+#include <CanId.h>
+#include <CanMessageBuffer.h>
+#include <Duet3Common.h>
+#ifndef CAN_ADDRESS
+#  define CAN_ADDRESS 119
+#endif
 
-
-typedef struct {
-    SSPChannel device;
-    Pin pins[6];
-} SDCardConfig;
-
-// These are our known SD card configurations
-static constexpr SDCardConfig SDCardConfigs[] = {
-    {SSP1, {PA_5, PA_6, PB_5, PA_4, NoPin, NoPin}}, // SKR Pro
-    {SSP1, {PA_5, PA_6, PA_7, PA_4, NoPin, NoPin}}, // GTR
-    {SSPSDIO, {PC_8, PC_9, PC_10, PC_11, PC_12, PD_2}}, // Fly/SDIO
-    {SSP3, {PC_10, PC_11, PC_12, PC_9, NoPin, NoPin}}, // MKS?
-    {SSP3, {PC_10, PC_11, PC_12, PA_15, NoPin, NoPin}}, // BTT BX
-};
-
-static bool MountSDCard(uint32_t config, FATFS *fs)
-{
-    const SDCardConfig *conf = &SDCardConfigs[config];
-    if (conf->device != SSPSDIO)
-    {
-        SPI::getSSPDevice(conf->device)->initPins(conf->pins[0], conf->pins[1], conf->pins[2]);
-        sd_mmc_setSSPChannel(0, conf->device, conf->pins[3]);
-    }
-    else
-    {
-        HardwareSDIO::SDIO1.InitPins(NvicPrioritySDIO);
-        sd_mmc_setSSPChannel(0, conf->device, NoPin);
-    }
-
-    FRESULT rslt= f_mount (fs, "0:", 1);
-    if (rslt == FR_OK)
-    {
-        return true;
-    }
-
-    // mount failed reset things
-    if (conf->device != SSPSDIO)
-        ((HardwareSPI *)(SPI::getSSPDevice(conf->device)))->disable();
-    sd_mmc_setSSPChannel(0, SSPNONE, NoPin);
-    return false;
-}
-
-BOOTIAPParams *const GetParams()
-{
-	BOOTIAPParams *const paramsPtr =  (BOOTIAPParams *const) GetParamsPtr();
-	if (paramsPtr->sig1 != BOOTIAPParamSig || paramsPtr->sig2 != BOOTIAPParamSig)
-		return nullptr;
-	else
-		return paramsPtr;
-}
-
-void SetParams(uint32_t val)
-{
-	BOOTIAPParams *const paramsPtr =  (BOOTIAPParams *const) GetParamsPtr();
-	paramsPtr->sig1 = BOOTIAPParamSig;
-	paramsPtr->sig2 = BOOTIAPParamSig;
-	paramsPtr->state = val;
-	FlushECC(paramsPtr, sizeof(BOOTIAPParams));
-}
-
-// Execute the main firmware we call this just after a processor reset
-// so pretty everything is in the default state.
-[[noreturn]] void StartFirmware()
-{
-	// Modify vector table location
-	__DSB();
-	__ISB();
-	SCB->VTOR = FirmwareFlashStart & SCB_VTOR_TBLOFF_Msk;
-	__DSB();
-	__ISB();
-
-	__asm volatile ("mov r3, %0" : : "r" (FirmwareFlashStart) : "r3");
-
-	__asm volatile ("ldr r1, [r3]");
-	__asm volatile ("msr msp, r1");
-	__asm volatile ("mov sp, r1");
-
-	__asm volatile ("isb");
-
-	__asm volatile ("ldr r1, [r3, #4]");
-	__asm volatile ("orr r1, r1, #1");
-	__asm volatile ("bx r1");
-
-	// This point is unreachable, but gcc doesn't seem to know that
-	for (;;) { }
-}
-
+alignas(4) uint8_t ioBuffer[IAP_BUFFER_SIZE];
 
 // Check that we have valid firmware.
 bool CheckValidFirmware(const DeviceVectors * const vectors)
@@ -811,26 +755,48 @@ bool CheckValidFirmware(const DeviceVectors * const vectors)
 	return true;
 }
 
+typedef struct {
+    SSPChannel device;
+    Pin pins[6];
+} SDCardConfig;
 
-void AppPreInit() noexcept
+// These are our known SD card configurations
+static constexpr SDCardConfig SDCardConfigs[] = {
+    {SSP1, {PA_5, PA_6, PB_5, PA_4, NoPin, NoPin}}, // SKR Pro
+    {SSP1, {PA_5, PA_6, PA_7, PA_4, NoPin, NoPin}}, // GTR
+    {SSPSDIO, {PC_8, PC_9, PC_10, PC_11, PC_12, PD_2}}, // Fly/SDIO
+    {SSP3, {PC_10, PC_11, PC_12, PC_9, NoPin, NoPin}}, // MKS?
+    {SSP3, {PC_10, PC_11, PC_12, PA_15, NoPin, NoPin}}, // BTT BX
+};
+
+static bool MountSDCard(uint32_t config, FATFS *fs)
 {
-	// Called before clocks configured hardware in default state. Be very careful what we do here!
-	// Check to see if we should try and start the main firmware
-	BOOTIAPParams *const paramsPtr = GetParams();
-	if (paramsPtr != nullptr && paramsPtr->state == BootState::ExecFirmware)
-	{
-		// Set things so we check for new firmware if this does not work
-		SetParams(BootState::FirmwareRunning);
-		// Make sure that what we are about jump to looks ok
-		const DeviceVectors * const vectors = reinterpret_cast<const DeviceVectors*>(FirmwareFlashStart);
-		if (CheckValidFirmware(vectors))
-			StartFirmware();
-	}	
-}	
+    const SDCardConfig *conf = &SDCardConfigs[config];
+    if (conf->device != SSPSDIO)
+    {
+        SPI::getSSPDevice(conf->device)->initPins(conf->pins[0], conf->pins[1], conf->pins[2]);
+        sd_mmc_setSSPChannel(0, conf->device, conf->pins[3]);
+    }
+    else
+    {
+        HardwareSDIO::SDIO1.InitPins(NvicPrioritySDIO);
+        sd_mmc_setSSPChannel(0, conf->device, NoPin);
+    }
 
-alignas(4) uint8_t ioBuffer[IAP_BUFFER_SIZE];
+    FRESULT rslt= f_mount (fs, "0:", 1);
+    if (rslt == FR_OK)
+    {
+        return true;
+    }
 
-bool TransferDataToFlash(FIL *imageFile)
+    // mount failed reset things
+    if (conf->device != SSPSDIO)
+        ((HardwareSPI *)(SPI::getSSPDevice(conf->device)))->disable();
+    sd_mmc_setSSPChannel(0, SSPNONE, NoPin);
+    return false;
+}
+
+bool SDTransferDataToFlash(FIL *imageFile)
 {
 	UINT cnt;
 	// read first part of file and check it is valid
@@ -863,7 +829,7 @@ bool TransferDataToFlash(FIL *imageFile)
 			debugPrintf("Flash verify failed\n");
 			return false;
 		}
-		debugPrintf("Written %d bytes to address %x\n", cnt, flashAddr);
+		debugPrintf("Written %d bytes to address %x\n", cnt, (unsigned int)flashAddr);
 		flashAddr += cnt;
 		rslt = f_read(imageFile, ioBuffer, sizeof(ioBuffer), &cnt);
 		if (rslt != FR_OK)
@@ -877,8 +843,7 @@ bool TransferDataToFlash(FIL *imageFile)
 	return true;
 }
 
-// Application entry point
-[[noreturn]] void AppMain() noexcept
+void SDInstallFirmware()
 {
 	FIL imageFile;
     FATFS fs;
@@ -899,7 +864,7 @@ bool TransferDataToFlash(FIL *imageFile)
 		if (f_open(&imageFile, firmwarePath, FA_READ) == FR_OK)
 		{
 			debugPrintf("Opened image file\n");
-			bool transferOk = TransferDataToFlash(&imageFile);
+			bool transferOk = SDTransferDataToFlash(&imageFile);
 			f_close(&imageFile);
 			// rename the file so we don't do this again
 			f_unlink((transferOk ? goodFirmwarePath : badFirmwarePath));
@@ -912,6 +877,243 @@ bool TransferDataToFlash(FIL *imageFile)
 	}
 	else
 		debugPrintf("Failed to mount SD card\n");
+}
+
+
+constexpr uint32_t BlockReceiveTimeout = 2000;								// block receive timeout milliseconds
+
+[[noreturn]] void ReportErrorAndRestart(const char *text, FirmwareFlashErrorCode err)
+{
+	CanInterface::Shutdown();
+	//ReportError(text, err);
+	debugPrintf(text);
+	delay(2000);
+	ResetProcessor();
+}
+
+
+void RequestFirmwareBlock(uint32_t fileOffset, uint32_t numBytes, CanMessageBuffer& buf)
+{
+	CanMessageFirmwareUpdateRequest * const msg = buf.SetupRequestMessageNoRid<CanMessageFirmwareUpdateRequest>(CanInterface::GetCanAddress(), CanId::MasterAddress);
+	SafeStrncpy(msg->boardType, "super5_h723", sizeof(msg->boardType));
+	msg->boardVersion = 0;
+	msg->bootloaderVersion = CanMessageFirmwareUpdateRequest::BootloaderVersion0;
+#if defined(CAN_IAP) && SAME5x
+	msg->uf2Format = true;											// firmware files for Duet 3 Mini are shipped in .uf2 format
+#else
+	msg->uf2Format = false;
+#endif
+	msg->fileWanted = (uint32_t)FirmwareModule::main;
+	msg->fileOffset = fileOffset;
+	msg->lengthRequested = numBytes;
+	buf.dataLength = msg->GetActualDataLength();
+	CanInterface::Send(&buf);
+}
+
+// Get a buffer of data from the host
+void GetBlock(uint32_t startingOffset, uint32_t& fileSize)
+{
+	WriteLed(0, true);
+	delay(25);														// flash the LED briefly to indicate we are requesting a new flash block
+	WriteLed(0, false);
+
+	CanMessageBuffer buf;
+	RequestFirmwareBlock(startingOffset, sizeof(ioBuffer), buf);	// ask for 16K or 64K from the starting offset
+
+	uint32_t whenStartedWaiting = millis();
+	uint32_t bytesReceived = 0;
+	bool done = false;
+	do
+	{
+		const bool ok = CanInterface::GetCanMessage(&buf);
+		if (ok)
+		{
+			if (buf.id.MsgType() == CanMessageType::firmwareBlockResponse)
+			{
+				const CanMessageFirmwareUpdateResponse& response = buf.msg.firmwareUpdateResponse;
+				switch (response.err)
+				{
+				case CanMessageFirmwareUpdateResponse::ErrNoFile:
+					ReportErrorAndRestart("Host reported no file", FirmwareFlashErrorCode::noFile);
+				case CanMessageFirmwareUpdateResponse::ErrBadOffset:
+					ReportErrorAndRestart("Host reported bad offset", FirmwareFlashErrorCode::badOffset);
+				case CanMessageFirmwareUpdateResponse::ErrOther:
+					ReportErrorAndRestart("Host reported other error", FirmwareFlashErrorCode::hostOther);
+				case CanMessageFirmwareUpdateResponse::ErrNone:
+					if (response.fileOffset >= startingOffset && response.fileOffset <= startingOffset + bytesReceived)
+					{
+						const uint32_t bufferOffset = response.fileOffset - startingOffset;
+						const uint32_t bytesToCopy = min<uint32_t>(sizeof(ioBuffer) - bufferOffset, response.dataLength);
+						memcpy(ioBuffer + bufferOffset, response.data, bytesToCopy);
+						if (response.fileOffset + bytesToCopy > startingOffset + bytesReceived)
+						{
+							bytesReceived = response.fileOffset - startingOffset + bytesToCopy;
+						}
+						if (bytesReceived == sizeof(ioBuffer) || bytesReceived >= response.fileLength - startingOffset)
+						{
+							// Reached the end of the file
+							memset(ioBuffer + bytesReceived, 0xFF, sizeof(ioBuffer) - bytesReceived);
+							fileSize = response.fileLength;
+							done = true;
+						}
+					}
+					whenStartedWaiting = millis();
+				}
+			}
+		}
+		else if (millis() - whenStartedWaiting > BlockReceiveTimeout)
+		{
+			if (bytesReceived == 0)
+			{
+				ReportErrorAndRestart("Block receive timeout", FirmwareFlashErrorCode::blockReceiveTimeout);
+			}
+			RequestFirmwareBlock(startingOffset + bytesReceived, sizeof(ioBuffer) - bytesReceived, buf);		// ask for 16K or 64K from the starting offset
+			whenStartedWaiting = millis();
+		}
+	} while (!done);
+}
+
+void CANInstallFirmware()
+{
+	CanInterface::Init(CAN_ADDRESS);
+
+	// Loop requesting firmware from the main board and handling any firmware that it sends to us
+	uint32_t bufferStartOffset = 0;
+	for (;;)
+	{
+		uint32_t fileSize;
+		GetBlock(bufferStartOffset, fileSize);
+		if (bufferStartOffset == 0)
+		{
+			// First block received, so unlock and erase the firmware
+			debugPrintf("Erase flash\n");
+			if (!FlashEraseAll())
+			{
+				ReportErrorAndRestart("Failed to erase flash", FirmwareFlashErrorCode::eraseFailed);
+			}
+		}
+
+		WriteLed(0, true);
+
+		debugPrintf("Writing flash\n");
+#if defined(CAN_IAP) && SAME5x
+		// The file being fetched is in .uf2 format, so extract the data from the buffer and write it
+		// On the SAME5x we fetch 64kb at a time, so we have up to 128 blocks in the buffer
+		for (unsigned int block = 0; block < FlashBlockWriteSize/512 && bufferStartOffset + (512 * (block + 1)) <= fileSize; ++block)
+		{
+			const UF2_Block *const currentBlock = reinterpret_cast<const UF2_Block*>(blockBuffer + (512 * block));
+			if (   currentBlock->magicStart0 == UF2_Block::MagicStart0Val
+				&& currentBlock->magicStart1 == UF2_Block::MagicStart1Val
+				&& currentBlock->magicEnd == UF2_Block::MagicEndVal
+				&& currentBlock->payloadSize <= 256
+			   )
+			{
+				const uint32_t firmwareOffset = FirmwareFlashStart + (bufferStartOffset/2) + (block * 256);
+				if (!Flash::Write(firmwareOffset, 256, currentBlock->data))
+				{
+					ReportErrorAndRestart("Failed to write flash", FirmwareFlashErrorCode::writeFailed);
+				}
+			}
+			else
+			{
+				ReportErrorAndRestart("bad UF2 file", FirmwareFlashErrorCode::invalidFirmware);
+			}
+		}
+#else
+		// The file being fetched is in binary format, so we can write it directly
+		if (!FlashWrite(FirmwareFlashStart + bufferStartOffset, ioBuffer, sizeof(ioBuffer)))
+		{
+			ReportErrorAndRestart("Failed to write flash", FirmwareFlashErrorCode::writeFailed);
+		}
+#endif
+		WriteLed(0, false);
+
+		bufferStartOffset += sizeof(ioBuffer);
+		if (bufferStartOffset >= fileSize)
+		{
+			break;
+		}
+	}
+
+	// If we get here, firmware update is complete
+	debugPrintf("Update complete\n");
+	CanInterface::Shutdown();
+}
+
+BOOTIAPParams *const GetParams()
+{
+	BOOTIAPParams *const paramsPtr =  (BOOTIAPParams *const) GetParamsPtr();
+	if (paramsPtr->sig1 != BOOTIAPParamSig || paramsPtr->sig2 != BOOTIAPParamSig)
+		return nullptr;
+	else
+		return paramsPtr;
+}
+
+void SetParams(uint32_t val)
+{
+	BOOTIAPParams *const paramsPtr =  (BOOTIAPParams *const) GetParamsPtr();
+	paramsPtr->sig1 = BOOTIAPParamSig;
+	paramsPtr->sig2 = BOOTIAPParamSig;
+	paramsPtr->state = val;
+	FlushECC(paramsPtr, sizeof(BOOTIAPParams));
+}
+
+// Execute the main firmware we call this just after a processor reset
+// so pretty everything is in the default state.
+[[noreturn]] void StartFirmware()
+{
+	// Modify vector table location
+	__DSB();
+	__ISB();
+	SCB->VTOR = FirmwareFlashStart & SCB_VTOR_TBLOFF_Msk;
+	__DSB();
+	__ISB();
+
+	__asm volatile ("mov r3, %0" : : "r" (FirmwareFlashStart) : "r3");
+
+	__asm volatile ("ldr r1, [r3]");
+	__asm volatile ("msr msp, r1");
+	__asm volatile ("mov sp, r1");
+
+	__asm volatile ("isb");
+
+	__asm volatile ("ldr r1, [r3, #4]");
+	__asm volatile ("orr r1, r1, #1");
+	__asm volatile ("bx r1");
+
+	// This point is unreachable, but gcc doesn't seem to know that
+	for (;;) { }
+}
+
+
+
+void AppPreInit() noexcept
+{
+	// Called before clocks configured hardware in default state. Be very careful what we do here!
+	// Check to see if we should try and start the main firmware
+	BOOTIAPParams *const paramsPtr = GetParams();
+	if (paramsPtr != nullptr && paramsPtr->state == BootState::ExecFirmware)
+	{
+		// Set things so we check for new firmware if this does not work
+		SetParams(BootState::FirmwareRunning);
+		// Make sure that what we are about jump to looks ok
+		const DeviceVectors * const vectors = reinterpret_cast<const DeviceVectors*>(FirmwareFlashStart);
+		if (CheckValidFirmware(vectors))
+			StartFirmware();
+	}	
+}	
+
+// Application entry point
+[[noreturn]] void AppMain() noexcept
+{
+	Init(false);
+	const DeviceVectors * const vectors = reinterpret_cast<const DeviceVectors*>(FirmwareFlashStart);
+	if (CheckValidFirmware(vectors))
+		debugPrintf("Current firmware is valid\n");
+	else
+		debugPrintf("Current firmware is not valid\n");
+	//SDInstallFirmware();
+	CANInstallFirmware();
 	SetParams(BootState::ExecFirmware);
 	debugPrintf("rebooting....\n");
 #if USB_DEBUG

@@ -5,8 +5,11 @@ BUILD_DIR ?= ./iapbuild
 IAP_DIR ?= ./IAP
 REPRAPFIRMWARE_DIR ?= ./RepRapFirmware
 RRFLIBRARIES_DIR ?= ./RRFLibraries
+CANLIB_DIR ?= ./CANlib
 CORESTM_DIR ?= ./CoreN2G
 CONFIG ?= IAP_SPI_LOADER
+USE_SD ?= 0
+USE_CAN ?= 0
 
 BUILD ?= Debug
 
@@ -19,6 +22,8 @@ V=@
 
 $(info Building RepRapFirmware IAP for STM32H7 based boards:)
 $(info  - Variant: $(VARIANT))
+$(info  - SD: $(USE_SD))
+$(info  - CAN: $(USE_CAN))
 
 ifeq ($(CONFIG),IAP_BOOT_LOADER)
 SPICONFIG ?= -DUSE_SDIO=1
@@ -26,7 +31,7 @@ LDNAME=iapbl
 VECTOR= -DVECT_TAB_OFFSET=0x0000
 else
 SPICONFIG = -DUSE_SSP1=1 -DUSE_SSP2=1 -DUSE_SSP3=1
-SDTYPE=0
+SDTYPE=255
 LDNAME=iapspi
 ifeq ($(VARIANT),STM32H723)
 	VECTOR= -DVECT_TAB_SRAM -DVECT_TAB_OFFSET=0x38000
@@ -75,9 +80,9 @@ $(info - Output name: $(OUTPUT_NAME))
 #Flags common for Core in c and c++
 FLAGS  = -D__$(PROCESSOR)__ -D_XOPEN_SOURCE -DSTM32 -DSTM32H7 -D$(VARIANT)xx -DSTM32H7xx
 #Build config flags
-FLAGS += -D$(CONFIG)=1 -DSDTYPE=$(SDTYPE) $(SPICONFIG)
+FLAGS += -D$(CONFIG)=1 -DSDTYPE=$(SDTYPE) $(SPICONFIG) -DUSE_SD=$(USE_SD) -DUSE_CAN=$(USE_CAN)
 FLAGS += -DSUPPORT_USB=1 -DUSBCON -DUSBD_USE_CDC -DUSB_PRODUCT=\"RepRapFirmware\" $(VECTOR)
-FLAGS += -DHAL_RRF=1 -DNO_PRINTF_FLOAT
+FLAGS += -DHAL_RRF=1 -DNO_PRINTF_FLOAT -DSUPPORT_CAN=$(USE_CAN)
 FLAGS +=  -Wall -c -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mfp16-format=ieee -mcpu=cortex-m7 -mthumb -fno-math-errno -mno-unaligned-access -ffunction-sections -fdata-sections
 FLAGS += -nostdlib -Wdouble-promotion -fsingle-precision-constant -fstack-usage
 #FLAGS += -Wfloat-equal
