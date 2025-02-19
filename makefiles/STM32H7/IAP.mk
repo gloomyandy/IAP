@@ -1,7 +1,7 @@
 #---IAP---
 IAP_SRC_BASE  = $(IAP_DIR)/src
 
-IAP_SRC_DIRS = Hardware/SharedSpi
+IAP_SRC_DIRS = Hardware/Spi
 ifeq ($(CONFIG),IAP_BOOT_LOADER)
 IAP_SRC_DIRS += FatFS
 endif

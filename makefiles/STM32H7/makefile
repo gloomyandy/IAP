@@ -21,7 +21,11 @@ $(info Building RepRapFirmware IAP for STM32H7 based boards:)
 $(info  - Variant: $(VARIANT))
 
 ifeq ($(CONFIG),IAP_BOOT_LOADER)
+ifeq ($(SDTYPE),2)
 SPICONFIG ?= -DUSE_SDIO=1
+else
+SPICONFIG ?= -DUSE_SSP1=1 -DUSE_SSP2=1 -DUSE_SSP3=1
+endif
 LDNAME=iapbl
 VECTOR= -DVECT_TAB_OFFSET=0x0000
 else
