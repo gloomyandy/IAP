@@ -687,15 +687,20 @@ const SBCIAPParams *const GetParams()
 
 
 #include <integer.h>
+#if USE_SD
 #include <ff.h>
 #include <sd_mmc.h>
 #include <HardwareSDIO.h>
+#include <SharedSpiDevice.h>
+#endif
+#if USE_CAN
 #include <CAN/CanInterface.h>
 #include <CanId.h>
 #include <CanMessageBuffer.h>
 #include <Duet3Common.h>
 #ifndef CAN_ADDRESS
 #  define CAN_ADDRESS 119
+#endif
 #endif
 
 alignas(4) uint8_t ioBuffer[IAP_BUFFER_SIZE];
@@ -767,6 +772,7 @@ static constexpr SDCardConfig SDCardConfigs[] = {
     {SSPSDIO, {PC_8, PC_9, PC_10, PC_11, PC_12, PD_2}}, // Fly/SDIO
     {SSP3, {PC_10, PC_11, PC_12, PC_9, NoPin, NoPin}}, // MKS?
     {SSP3, {PC_10, PC_11, PC_12, PA_15, NoPin, NoPin}}, // BTT BX
+    {SSP2, {PB_13, PB_14, PB_15, PB_12, NoPin, NoPin}}, // BTT kraken?
 };
 
 static bool MountSDCard(uint32_t config, FATFS *fs)
@@ -774,8 +780,10 @@ static bool MountSDCard(uint32_t config, FATFS *fs)
     const SDCardConfig *conf = &SDCardConfigs[config];
     if (conf->device != SSPSDIO)
     {
-        SPI::getSSPDevice(conf->device)->initPins(conf->pins[0], conf->pins[1], conf->pins[2]);
+		SharedSpiDevice::Init();
+        SPI::getSSPDevice(conf->device)->initPins(conf->pins[0], conf->pins[1], conf->pins[2], NvicPrioritySpi);
         sd_mmc_setSSPChannel(0, conf->device, conf->pins[3]);
+    	sd_mmc_reinit_slot(0, NoPin, 10000000);
     }
     else
     {
@@ -852,12 +860,6 @@ void SDInstallFirmware()
 	fs.win = sectorBuffer;
 # endif
 
-	Init(false);
-	const DeviceVectors * const vectors = reinterpret_cast<const DeviceVectors*>(FirmwareFlashStart);
-	if (CheckValidFirmware(vectors))
-		debugPrintf("Current firmware is valid\n");
-	else
-		debugPrintf("Current firmware is not valid\n");
 	if (MountSDCard(SDTYPE, &fs))
 	{
 		debugPrintf("Mounted SD card\n");
@@ -879,7 +881,7 @@ void SDInstallFirmware()
 		debugPrintf("Failed to mount SD card\n");
 }
 
-
+#if USE_CAN
 constexpr uint32_t BlockReceiveTimeout = 2000;								// block receive timeout milliseconds
 
 [[noreturn]] void ReportErrorAndRestart(const char *text, FirmwareFlashErrorCode err)
@@ -1039,6 +1041,7 @@ void CANInstallFirmware()
 	debugPrintf("Update complete\n");
 	CanInterface::Shutdown();
 }
+#endif
 
 BOOTIAPParams *const GetParams()
 {
@@ -1112,8 +1115,12 @@ void AppPreInit() noexcept
 		debugPrintf("Current firmware is valid\n");
 	else
 		debugPrintf("Current firmware is not valid\n");
-	//SDInstallFirmware();
+#if USE_SD
+	SDInstallFirmware();
+#endif
+#if USE_CAN
 	CANInstallFirmware();
+#endif
 	SetParams(BootState::ExecFirmware);
 	debugPrintf("rebooting....\n");
 #if USB_DEBUG
