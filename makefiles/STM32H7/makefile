@@ -26,7 +26,11 @@ $(info  - SD: $(USE_SD))
 $(info  - CAN: $(USE_CAN))
 
 ifeq ($(CONFIG),IAP_BOOT_LOADER)
+ifeq ($(SDTYPE),2)
 SPICONFIG ?= -DUSE_SDIO=1
+else
+SPICONFIG ?= -DUSE_SSP1=1 -DUSE_SSP2=1 -DUSE_SSP3=1
+endif
 LDNAME=iapbl
 VECTOR= -DVECT_TAB_OFFSET=0x0000
 else

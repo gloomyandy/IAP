@@ -1,9 +1,10 @@
 #---IAP---
 IAP_SRC_BASE  = $(IAP_DIR)/src
 
-IAP_SRC_DIRS = Hardware/SharedSpi
+IAP_SRC_DIRS =
 IAP_INCLUDES =
 ifeq ($(USE_SD),1)
+IAP_SRC_DIRS = Hardware/Spi
 IAP_SRC_DIRS += FatFS
 endif
 ifeq ($(USE_CAN),1)
