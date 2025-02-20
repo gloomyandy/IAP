@@ -215,8 +215,8 @@ static void FlashClearError()
 	// Clear pending flags (if any)
 #if STM32H7
 	__HAL_FLASH_CLEAR_FLAG_BANK1(FLASH_FLAG_WRPERR_BANK1 | FLASH_FLAG_PGSERR_BANK1 | FLASH_FLAG_STRBERR_BANK1 | \
-                            		FLASH_FLAG_INCERR_BANK1 | FLASH_FLAG_OPERR_BANK1 | FLASH_FLAG_SNECCERR_BANK1 | \
-                                    FLASH_IT_DBECCERR_BANK1);
+									FLASH_FLAG_INCERR_BANK1 | FLASH_FLAG_OPERR_BANK1 | FLASH_FLAG_SNECCERR_BANK1 | \
+									FLASH_IT_DBECCERR_BANK1);
 #if STM32H743xx
 	__HAL_FLASH_CLEAR_FLAG_BANK2((FLASH_FLAG_WRPERR_BANK2 | FLASH_FLAG_PGSERR_BANK2 | FLASH_FLAG_STRBERR_BANK2 | \
 									FLASH_FLAG_INCERR_BANK2 | FLASH_FLAG_SNECCERR_BANK2 | FLASH_IT_DBECCERR_BANK2) & 0x7FFFFFFFU);
@@ -231,20 +231,20 @@ static void FlashClearError()
 static bool isErased(const uint32_t addr, const size_t len) noexcept
 {
 #if STM32H7
-    // On the STM32H7 if the flash has not been correctly erased then simply reading
-    // it can cause a bus fault (due to multiple ECC errors). We avoid this by disaabling
-    // the fault mechanism while checking the flash memory.
-    const coreIrqflags_t flags = IrqSave();
+	// On the STM32H7 if the flash has not been correctly erased then simply reading
+	// it can cause a bus fault (due to multiple ECC errors). We avoid this by disaabling
+	// the fault mechanism while checking the flash memory.
+	const coreIrqflags_t flags = IrqSave();
 
-    __set_FAULTMASK(1);
-    SCB->CCR |= SCB_CCR_BFHFNMIGN_Msk;
-    __DSB();
-    __ISB();
+	__set_FAULTMASK(1);
+	SCB->CCR |= SCB_CCR_BFHFNMIGN_Msk;
+	__DSB();
+	__ISB();
 #endif
 	HAL_FLASH_Unlock();
 	FlashClearError();
 
-    bool blank = true;
+	bool blank = true;
 	// Check that the sector really is erased
 	for (uint32_t p = addr; p < addr + len && blank; p += sizeof(uint32_t))
 	{
@@ -258,7 +258,7 @@ static bool isErased(const uint32_t addr, const size_t len) noexcept
 	HAL_FLASH_Lock();
 
 #if STM32H7
-    // restore bus fault logic
+	// restore bus fault logic
 	__set_FAULTMASK(0);
 	SCB->CCR &= ~SCB_CCR_BFHFNMIGN_Msk;
 	__DSB();
@@ -276,7 +276,7 @@ static uint32_t FlashGetSector(const uint32_t addr) noexcept
 		return IAP_BAD_SECTOR;
 	}
 	// Flash memory on STM32F4 is 4 sectors of 16K + 1 sector of 64K + 8 sectors of 128K
-    // on the H7 all sectors are 128Kb
+	// on the H7 all sectors are 128Kb
 	uint32_t offset = addr - FLASH_BASE;
 #if STM32H7
 	return offset/0x20000;
@@ -315,19 +315,19 @@ static bool FlashEraseSector(const uint32_t sector) noexcept
 	bool ret = true;
 	eraseInfo.TypeErase = FLASH_TYPEERASE_SECTORS;
 #if STM32H7
-    if (sector < FLASH_SECTOR_TOTAL)
-    {
-	    eraseInfo.Banks = FLASH_BANK_1;
-        eraseInfo.Sector = sector;
-    }
-    else
-    {
+	if (sector < FLASH_SECTOR_TOTAL)
+	{
+		eraseInfo.Banks = FLASH_BANK_1;
+		eraseInfo.Sector = sector;
+	}
+	else
+	{
 #if STM32H743xx
-	    eraseInfo.Banks = FLASH_BANK_2;
-        eraseInfo.Sector = sector - FLASH_SECTOR_TOTAL;
+		eraseInfo.Banks = FLASH_BANK_2;
+		eraseInfo.Sector = sector - FLASH_SECTOR_TOTAL;
 #endif
-    }
-    debugPrintf("Erase %d bank %d sector %d\n", sector, eraseInfo.Banks, eraseInfo.Sector);
+	}
+	debugPrintf("Erase %d bank %d sector %d\n", sector, eraseInfo.Banks, eraseInfo.Sector);
 #else
 	eraseInfo.Sector = sector;
 #endif
@@ -357,7 +357,7 @@ static bool FlashWrite(const uint32_t addr, const uint8_t *data, const size_t le
 	bool ret = true;
 	debugPrintf("Write flash addr %x len %d\n", (unsigned)addr, (int)len);
 	WatchdogReset();
-    bool cacheEnabled = Cache::Disable();
+	bool cacheEnabled = Cache::Disable();
 	HAL_FLASH_Unlock();
 	FlashClearError();
 	uint32_t cnt = 0;
@@ -386,7 +386,7 @@ static bool FlashWrite(const uint32_t addr, const uint8_t *data, const size_t le
 #endif
 	}
 	HAL_FLASH_Lock();
-    if (cacheEnabled) Cache::Enable();
+	if (cacheEnabled) Cache::Enable();
 	if (!ret)
 		debugPrintf("Flash write failed cnt %d\n", (int)((int)dst - addr));
 
@@ -398,32 +398,32 @@ static bool FlashWrite(const uint32_t addr, const uint8_t *data, const size_t le
 static bool FlashRead(const uint32_t addr, uint8_t *data, const size_t len) noexcept
 {
 #if STM32H7
-    // On the STM32H7 if the flash has not been correctly erased then simply reading
-    // it can cause a bus fault (due to multiple ECC errors). We avoid this by disaabling
-    // the fault mechanism while checking the flash memory.
-    const coreIrqflags_t flags = IrqSave();
+	// On the STM32H7 if the flash has not been correctly erased then simply reading
+	// it can cause a bus fault (due to multiple ECC errors). We avoid this by disaabling
+	// the fault mechanism while checking the flash memory.
+	const coreIrqflags_t flags = IrqSave();
 
-    __set_FAULTMASK(1);
-    SCB->CCR |= SCB_CCR_BFHFNMIGN_Msk;
-    __DSB();
-    __ISB();
+	__set_FAULTMASK(1);
+	SCB->CCR |= SCB_CCR_BFHFNMIGN_Msk;
+	__DSB();
+	__ISB();
 #endif
 	HAL_FLASH_Unlock();
 	FlashClearError();
-    // Do the actual read from flash
-    memcpy((void *)data, (void *)addr, len);
-    // Clear any errors
+	// Do the actual read from flash
+	memcpy((void *)data, (void *)addr, len);
+	// Clear any errors
 	FlashClearError();
 	HAL_FLASH_Lock();
 #if STM32H7
-    // restore bus fault logic
+	// restore bus fault logic
 	__set_FAULTMASK(0);
 	SCB->CCR &= ~SCB_CCR_BFHFNMIGN_Msk;
 	__DSB();
 	__ISB();
 	IrqRestore(flags);
 #endif
-    return true;
+	return true;
 }
 #endif
 
@@ -761,47 +761,47 @@ bool CheckValidFirmware(const DeviceVectors * const vectors)
 }
 
 typedef struct {
-    SSPChannel device;
-    Pin pins[6];
+	SSPChannel device;
+	Pin pins[6];
 } SDCardConfig;
 
 // These are our known SD card configurations
 static constexpr SDCardConfig SDCardConfigs[] = {
-    {SSP1, {PA_5, PA_6, PB_5, PA_4, NoPin, NoPin}}, // SKR Pro
-    {SSP1, {PA_5, PA_6, PA_7, PA_4, NoPin, NoPin}}, // GTR
-    {SSPSDIO, {PC_8, PC_9, PC_10, PC_11, PC_12, PD_2}}, // Fly/SDIO
-    {SSP3, {PC_10, PC_11, PC_12, PC_9, NoPin, NoPin}}, // MKS?
-    {SSP3, {PC_10, PC_11, PC_12, PA_15, NoPin, NoPin}}, // BTT BX
-    {SSP2, {PB_13, PB_14, PB_15, PB_12, NoPin, NoPin}}, // BTT kraken?
+	{SSP1, {PA_5, PA_6, PB_5, PA_4, NoPin, NoPin}}, // SKR Pro
+	{SSP1, {PA_5, PA_6, PA_7, PA_4, NoPin, NoPin}}, // GTR
+	{SSPSDIO, {PC_8, PC_9, PC_10, PC_11, PC_12, PD_2}}, // Fly/SDIO
+	{SSP3, {PC_10, PC_11, PC_12, PC_9, NoPin, NoPin}}, // MKS?
+	{SSP3, {PC_10, PC_11, PC_12, PA_15, NoPin, NoPin}}, // BTT BX
+	{SSP2, {PB_13, PB_14, PB_15, PB_12, NoPin, NoPin}}, // BTT kraken?
 };
 
 static bool MountSDCard(uint32_t config, FATFS *fs)
 {
-    const SDCardConfig *conf = &SDCardConfigs[config];
-    if (conf->device != SSPSDIO)
-    {
+	const SDCardConfig *conf = &SDCardConfigs[config];
+	if (conf->device != SSPSDIO)
+	{
 		SharedSpiDevice::Init();
-        SPI::getSSPDevice(conf->device)->initPins(conf->pins[0], conf->pins[1], conf->pins[2], NvicPrioritySpi);
-        sd_mmc_setSSPChannel(0, conf->device, conf->pins[3]);
-    	sd_mmc_reinit_slot(0, NoPin, 10000000);
-    }
-    else
-    {
-        HardwareSDIO::SDIO1.InitPins(NvicPrioritySDIO);
-        sd_mmc_setSSPChannel(0, conf->device, NoPin);
-    }
+		SPI::getSSPDevice(conf->device)->initPins(conf->pins[0], conf->pins[1], conf->pins[2], NvicPrioritySpi);
+		sd_mmc_setSSPChannel(0, conf->device, conf->pins[3]);
+		sd_mmc_reinit_slot(0, NoPin, 10000000);
+	}
+	else
+	{
+		HardwareSDIO::SDIO1.InitPins(NvicPrioritySDIO);
+		sd_mmc_setSSPChannel(0, conf->device, NoPin);
+	}
 
-    FRESULT rslt= f_mount (fs, "0:", 1);
-    if (rslt == FR_OK)
-    {
-        return true;
-    }
+	FRESULT rslt= f_mount (fs, "0:", 1);
+	if (rslt == FR_OK)
+	{
+		return true;
+	}
 
-    // mount failed reset things
-    if (conf->device != SSPSDIO)
-        ((HardwareSPI *)(SPI::getSSPDevice(conf->device)))->disable();
-    sd_mmc_setSSPChannel(0, SSPNONE, NoPin);
-    return false;
+	// mount failed reset things
+	if (conf->device != SSPSDIO)
+		((HardwareSPI *)(SPI::getSSPDevice(conf->device)))->disable();
+	sd_mmc_setSSPChannel(0, SSPNONE, NoPin);
+	return false;
 }
 
 bool SDTransferDataToFlash(FIL *imageFile)
@@ -854,7 +854,7 @@ bool SDTransferDataToFlash(FIL *imageFile)
 void SDInstallFirmware()
 {
 	FIL imageFile;
-    FATFS fs;
+	FATFS fs;
 #if STM32H7
 	alignas(4) static uint8_t sectorBuffer[512];
 	fs.win = sectorBuffer;
