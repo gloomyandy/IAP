@@ -18,12 +18,15 @@ constexpr uint32_t BOOTIAPParamSig = 0xB0010001;
 typedef struct{
     uint32_t sig1;
     uint32_t state;
+    uint32_t bootParam;
     uint32_t sig2;
 } BOOTIAPParams;
 
 typedef enum {
-    LoadFirmware,
+    LoadSDFirmware,
+    LoadCANFirmware,
     ExecFirmware,
+    DoubleTapTest,
     FirmwareRunning
 } BootState;
 

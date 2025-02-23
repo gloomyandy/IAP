@@ -777,6 +777,7 @@ static constexpr SDCardConfig SDCardConfigs[] = {
 
 static bool MountSDCard(uint32_t config, FATFS *fs)
 {
+	debugPrintf("Mount SD card config %d\n", config);
 	const SDCardConfig *conf = &SDCardConfigs[config];
 	if (conf->device != SSPSDIO)
 	{
@@ -888,7 +889,8 @@ constexpr uint32_t BlockReceiveTimeout = 2000;								// block receive timeout m
 {
 	CanInterface::Shutdown();
 	//ReportError(text, err);
-	debugPrintf(text);
+	debugPrintf("Error: %s\n", text);
+	debugPrintf("Resetting\n");
 	delay(2000);
 	ResetProcessor();
 }
@@ -975,9 +977,9 @@ void GetBlock(uint32_t startingOffset, uint32_t& fileSize)
 	} while (!done);
 }
 
-void CANInstallFirmware()
+void CANInstallFirmware(CanAddress canAddress)
 {
-	CanInterface::Init(CAN_ADDRESS);
+	CanInterface::Init(canAddress);
 
 	// Loop requesting firmware from the main board and handling any firmware that it sends to us
 	uint32_t bufferStartOffset = 0;
@@ -1058,6 +1060,7 @@ void SetParams(uint32_t val)
 	paramsPtr->sig1 = BOOTIAPParamSig;
 	paramsPtr->sig2 = BOOTIAPParamSig;
 	paramsPtr->state = val;
+	paramsPtr->bootParam = 0;
 	FlushECC(paramsPtr, sizeof(BOOTIAPParams));
 }
 
@@ -1109,18 +1112,39 @@ void AppPreInit() noexcept
 // Application entry point
 [[noreturn]] void AppMain() noexcept
 {
+	BOOTIAPParams *const paramsPtr = GetParams();
+	BootState initialState = paramsPtr == nullptr ? BootState::FirmwareRunning : (BootState)paramsPtr->state;
+	CanAddress canAddress = ((paramsPtr != nullptr) && (initialState == BootState::LoadCANFirmware)) ? (CanAddress)(paramsPtr->bootParam) : CAN_ADDRESS;
+
+	// Set things up to test for a double tap of the reset button
+	SetParams(BootState::DoubleTapTest);
 	Init(false);
+	// Give extra time for second reset button push
+	delay(1000);
 	const DeviceVectors * const vectors = reinterpret_cast<const DeviceVectors*>(FirmwareFlashStart);
 	if (CheckValidFirmware(vectors))
 		debugPrintf("Current firmware is valid\n");
 	else
 		debugPrintf("Current firmware is not valid\n");
+	SetParams(BootState::FirmwareRunning);
+	debugPrintf("Initial state is %d\n", (int)initialState);
+	switch(initialState)
+	{
+	case BootState::FirmwareRunning:
+	case BootState::LoadSDFirmware:
 #if USE_SD
-	SDInstallFirmware();
+		SDInstallFirmware();
 #endif
+		break;
+	case BootState::LoadCANFirmware:
+	case BootState::DoubleTapTest:
 #if USE_CAN
-	CANInstallFirmware();
+		CANInstallFirmware(canAddress);
 #endif
+		break;
+	default:
+		break;
+	}
 	SetParams(BootState::ExecFirmware);
 	debugPrintf("rebooting....\n");
 #if USB_DEBUG
