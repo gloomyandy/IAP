@@ -21,8 +21,8 @@ static CanAddress boardAddress;
 
 constexpr unsigned int CanDeviceNumber = 0;			// we use FDCAN1 (which is device 0)
 #if STM32H7
-constexpr Pin CanReadPin = PB_8;
-constexpr Pin CanWritePin = PB_9;
+constexpr Pin CanReadPin = CAN_READ;
+constexpr Pin CanWritePin = CAN_WRITE;
 #endif
 
 constexpr CanDevice::Config Can0Config =

@@ -5,7 +5,7 @@
  *      Author: David
  */
 #include "Core.h"
-
+#include "CoreIO.h"
 #include "SharedSpiDevice.h"
 #include "SharedSpiClient.h"
 
@@ -20,7 +20,7 @@ void SharedSpiClient::InitCsPin() const noexcept
 {
 	if (csPin != NoPin)
 	{
-		pinMode(csPin, (csActivePolarity) ? OUTPUT_LOW : OUTPUT_HIGH);
+		SetPinMode(csPin, (csActivePolarity) ? OUTPUT_LOW : OUTPUT_HIGH);
 	}
 }
 

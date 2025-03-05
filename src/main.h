@@ -12,7 +12,7 @@ constexpr size_t FLASH_ADDR = FLASH_BASE;
 #if IAP_SPI_LOADER
 #define FIRMWARE_NAME "STM32H7 SPI loader"
 #else
-#define FIRMWARE_NAME "STM32H7 Boot loader IOMode:" STRINGIFY(SDTYPE)
+#define FIRMWARE_NAME  BOARD_NAME " Boot loader IOMode:" STRINGIFY(SDTYPE) " S:" STRINGIFY(USE_SD) " C:" STRINGIFY(USE_CAN)
 #endif
 #elif STM32F4
 constexpr size_t FirmwareFlashStart = 0x8008000;

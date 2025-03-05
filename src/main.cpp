@@ -12,10 +12,11 @@
 #include <malloc.h>
 #include <General/SafeVsnprintf.h>
 #include <General/StringFunctions.h>
+#include <Flash.h>
 #include "iapparams.h"
 // Define replacement standard library functions
 #include <syscalls.h>
-#define USB_DEBUG 1
+//#define USB_DEBUG 1
 #ifndef IAP_BOOT_LOADER
 #define IAP_BOOT_LOADER 1
 #endif
@@ -115,39 +116,6 @@ extern "C" void ReleaseMallocMutex() noexcept
 {
 }
 
-void FlushECC(void *ptr, int bytes) noexcept
-{
-	// On some mcus we need to flush write to RAM before doing a reset if we want to read
-	// that data after the reset.
-#if STM32H7
-	uint32_t addr = (uint32_t)ptr;
-	/* Check if accessing AXI SRAM => 64-bit words*/
-	if(addr >= 0x24000000 && addr < 0x24080000){
-		volatile uint64_t temp;
-		volatile uint64_t* flush_ptr = (uint64_t*) (addr & 0xFFFFFFF8);
-		uint64_t *end_ptr = (uint64_t*) ((addr+bytes) & 0xFFFFFFF8) + 1;
-
-		do{
-			temp = *flush_ptr;
-			*flush_ptr = temp;
-			flush_ptr++;
-		}while(flush_ptr != end_ptr);
-	}
-	/* Otherwise 32-bit words */
-	else {
-		volatile uint32_t temp;
-		volatile uint32_t* flush_ptr = (uint32_t*) (addr & 0xFFFFFFFC);
-		uint32_t *end_ptr = (uint32_t*) ((addr+bytes) & 0xFFFFFFFC) + 1;
-
-		do{
-			temp = *flush_ptr;
-			*flush_ptr = temp;
-			flush_ptr++;
-		}while(flush_ptr != end_ptr);
-	}
-#endif
-}
-
 void *GetParamsPtr() noexcept
 {
 	// We use a paramter block just above the top of the stack. Return a pointer to it
@@ -192,240 +160,12 @@ void Init(bool watchdog) noexcept
 	// enable diag led
 	if (LED_PIN != NoPin)
 	{
-		pinMode(LED_PIN, (LED_ON) ? OUTPUT_LOW : OUTPUT_HIGH);
+		SetPinMode(LED_PIN, (LED_ON) ? OUTPUT_LOW : OUTPUT_HIGH);
 	}
 	// Trap integer divide-by-zero.
 	// We could also trap unaligned memory access, if we change the gcc options to not generate code that uses unaligned memory access.
 	SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;
 }
-
-#if STM32H7
-// We write in 256 bit alignment!
-#define IS_FLASH_ALIGNED(addr) (((uint32_t)(addr) & (32-1)) == 0)
-#else
-// we write with 32bit alignment
-#define IS_FLASH_PROGRAM_ADDRESS(addr) (((addr) >= FLASH_BASE) && ((addr) <= FLASH_END))
-#define IS_FLASH_ALIGNED(addr) (((uint32_t)(addr) & (sizeof(uint32_t)-1)) == 0)
-#endif
-#define IS_ALIGNED(addr) (((uint32_t)(addr) & (sizeof(uint32_t)-1)) == 0)
-constexpr uint32_t IAP_BAD_SECTOR = 0xffffffff;
-
-static void FlashClearError()
-{
-	// Clear pending flags (if any)
-#if STM32H7
-	__HAL_FLASH_CLEAR_FLAG_BANK1(FLASH_FLAG_WRPERR_BANK1 | FLASH_FLAG_PGSERR_BANK1 | FLASH_FLAG_STRBERR_BANK1 | \
-									FLASH_FLAG_INCERR_BANK1 | FLASH_FLAG_OPERR_BANK1 | FLASH_FLAG_SNECCERR_BANK1 | \
-									FLASH_IT_DBECCERR_BANK1);
-#if STM32H743xx
-	__HAL_FLASH_CLEAR_FLAG_BANK2((FLASH_FLAG_WRPERR_BANK2 | FLASH_FLAG_PGSERR_BANK2 | FLASH_FLAG_STRBERR_BANK2 | \
-									FLASH_FLAG_INCERR_BANK2 | FLASH_FLAG_SNECCERR_BANK2 | FLASH_IT_DBECCERR_BANK2) & 0x7FFFFFFFU);
-#endif
-#else
-	__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |\
-							FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR| FLASH_FLAG_PGSERR);
-#endif
-}
-
-
-static bool isErased(const uint32_t addr, const size_t len) noexcept
-{
-#if STM32H7
-	// On the STM32H7 if the flash has not been correctly erased then simply reading
-	// it can cause a bus fault (due to multiple ECC errors). We avoid this by disaabling
-	// the fault mechanism while checking the flash memory.
-	const coreIrqflags_t flags = IrqSave();
-
-	__set_FAULTMASK(1);
-	SCB->CCR |= SCB_CCR_BFHFNMIGN_Msk;
-	__DSB();
-	__ISB();
-#endif
-	HAL_FLASH_Unlock();
-	FlashClearError();
-
-	bool blank = true;
-	// Check that the sector really is erased
-	for (uint32_t p = addr; p < addr + len && blank; p += sizeof(uint32_t))
-	{
-		if (*reinterpret_cast<const uint32_t*>(p) != 0xFFFFFFFF)
-		{
-			blank = false;
-		}
-	}
-
-	FlashClearError();
-	HAL_FLASH_Lock();
-
-#if STM32H7
-	// restore bus fault logic
-	__set_FAULTMASK(0);
-	SCB->CCR &= ~SCB_CCR_BFHFNMIGN_Msk;
-	__DSB();
-	__ISB();
-	IrqRestore(flags);
-#endif
-	return blank;
-}
-
-static uint32_t FlashGetSector(const uint32_t addr) noexcept
-{
-	if (!IS_FLASH_PROGRAM_ADDRESS(addr))
-	{
-		debugPrintf("Bad flash address %x\n", (unsigned)addr);
-		return IAP_BAD_SECTOR;
-	}
-	// Flash memory on STM32F4 is 4 sectors of 16K + 1 sector of 64K + 8 sectors of 128K
-	// on the H7 all sectors are 128Kb
-	uint32_t offset = addr - FLASH_BASE;
-#if STM32H7
-	return offset/0x20000;
-#else
-	if (offset < 4*0x4000)
-		return offset / 0x4000;
-	else if (offset < 4*0x4000 + 0x10000)
-		return 4;
-	else
-		return offset / 0x20000 + 4;
-#endif
-}
-
-static size_t FlashGetSectorLength(const uint32_t addr) noexcept
-{
-	uint32_t sector = FlashGetSector(addr);
-	if (sector == IAP_BAD_SECTOR)
-		return 0;
-#if STM32H7
-	return 0x20000;
-#else
-	if (sector < 4)
-		return 0x4000;
-	else if (sector < 5)
-		return 0x10000;
-	else
-		return 0x20000;
-#endif
-}
-
-static bool FlashEraseSector(const uint32_t sector) noexcept
-{
-	WatchdogReset();
-	FLASH_EraseInitTypeDef eraseInfo;
-	uint32_t SectorError;
-	bool ret = true;
-	eraseInfo.TypeErase = FLASH_TYPEERASE_SECTORS;
-#if STM32H7
-	if (sector < FLASH_SECTOR_TOTAL)
-	{
-		eraseInfo.Banks = FLASH_BANK_1;
-		eraseInfo.Sector = sector;
-	}
-	else
-	{
-#if STM32H743xx
-		eraseInfo.Banks = FLASH_BANK_2;
-		eraseInfo.Sector = sector - FLASH_SECTOR_TOTAL;
-#endif
-	}
-	debugPrintf("Erase %d bank %d sector %d\n", sector, eraseInfo.Banks, eraseInfo.Sector);
-#else
-	eraseInfo.Sector = sector;
-#endif
-	eraseInfo.NbSectors = 1;
-	eraseInfo.VoltageRange = FLASH_VOLTAGE_RANGE_3;
-	HAL_FLASH_Unlock();
-	FlashClearError();
-	if (HAL_FLASHEx_Erase(&eraseInfo, &SectorError) != HAL_OK)
-	{
-		ret = false;
-	}
-	HAL_FLASH_Lock();
-	if (!ret)
-		debugPrintf("Flash erase failed sector %d error %x\n", (int)sector, (unsigned)SectorError);
-	return ret;
-}
-
-static bool FlashWrite(const uint32_t addr, const uint8_t *data, const size_t len) noexcept
-{
-	uint32_t *dst = (uint32_t *)addr;
-	uint32_t *src = (uint32_t *)data;
-	if (!IS_FLASH_ALIGNED(dst) || !IS_ALIGNED(src) || !IS_ALIGNED(len))
-	{
-		debugPrintf("FlashWrite alignment error dst %x, data %d len %d\n", (unsigned)dst, (unsigned)src, (int)len);
-		return false;
-	}
-	bool ret = true;
-	debugPrintf("Write flash addr %x len %d\n", (unsigned)addr, (int)len);
-	WatchdogReset();
-	bool cacheEnabled = Cache::Disable();
-	HAL_FLASH_Unlock();
-	FlashClearError();
-	uint32_t cnt = 0;
-	while(cnt < len)
-	{
-#if STM32H7
-#define FLASH_TYPEPROGRAM_WORD FLASH_TYPEPROGRAM_FLASHWORD
-		// We write 256 bits == 8 32bit words at a time
-		if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_FLASHWORD, (uint32_t) dst, (uint64_t) src) != HAL_OK)
-		{
-			ret = false;
-			break;
-		}
-		dst += 8;
-		src += 8;
-		cnt += 32;
-#else
-		if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, (uint32_t) dst, (uint64_t) *src) != HAL_OK)
-		{
-			ret = false;
-			break;
-		}
-		dst++;
-		src++;
-		cnt += 4;
-#endif
-	}
-	HAL_FLASH_Lock();
-	if (cacheEnabled) Cache::Enable();
-	if (!ret)
-		debugPrintf("Flash write failed cnt %d\n", (int)((int)dst - addr));
-
-	return ret; 
-}
-
-// not currently used
-#if 0
-static bool FlashRead(const uint32_t addr, uint8_t *data, const size_t len) noexcept
-{
-#if STM32H7
-	// On the STM32H7 if the flash has not been correctly erased then simply reading
-	// it can cause a bus fault (due to multiple ECC errors). We avoid this by disaabling
-	// the fault mechanism while checking the flash memory.
-	const coreIrqflags_t flags = IrqSave();
-
-	__set_FAULTMASK(1);
-	SCB->CCR |= SCB_CCR_BFHFNMIGN_Msk;
-	__DSB();
-	__ISB();
-#endif
-	HAL_FLASH_Unlock();
-	FlashClearError();
-	// Do the actual read from flash
-	memcpy((void *)data, (void *)addr, len);
-	// Clear any errors
-	FlashClearError();
-	HAL_FLASH_Lock();
-#if STM32H7
-	// restore bus fault logic
-	__set_FAULTMASK(0);
-	SCB->CCR &= ~SCB_CCR_BFHFNMIGN_Msk;
-	__DSB();
-	__ISB();
-	IrqRestore(flags);
-#endif
-	return true;
-}
-#endif
 
 bool FlashVerify(const uint32_t addr, const uint8_t *data, const size_t len)
 {
@@ -446,19 +186,23 @@ bool FlashVerify(const uint32_t addr, const uint8_t *data, const size_t len)
 	return true;
 }
 
-bool FlashEraseAll() noexcept
+bool FlashErase(uint32_t size) noexcept
 {
 	uint32_t addr = FirmwareFlashStart;
-	while (addr < FLASH_ADDR + FLASH_SIZE)
+debugPrintf("Erase size %d\n", size);
+	if (FirmwareFlashStart + size > FLASH_ADDR + FLASH_SIZE)
+		size = FLASH_ADDR + FLASH_SIZE - FirmwareFlashStart;
+debugPrintf("Erase size2 %d\n", size);
+	while (addr < FirmwareFlashStart + size)
 	{
-		uint32_t sector = FlashGetSector(addr);
-		uint32_t len = FlashGetSectorLength(addr);
+		uint32_t sector = Flash::FlashGetSector(addr);
+		uint32_t len = Flash::FlashGetSectorLength(addr);
 		debugPrintf("Erasing address %x sector %d length %d\n", (unsigned)addr, (int)sector, (int)len);
-		if (isErased(addr, len))
+		if (Flash::FlashIsErased(addr, len))
 			debugPrintf("Allready erased\n");
 		else
 		{
-			if (!FlashEraseSector(sector))
+			if (!Flash::FlashEraseSector(sector))
 			{
 				debugPrintf("Erase failed\n");
 				return false;
@@ -502,7 +246,7 @@ HardwareSPI *InitSPI(SSPChannel chan, Pin clk, Pin miso, Pin mosi, Pin cs, Pin t
 {
 	transferReadyPin = tfrRdy;
 	transferReadyHigh = false;
-	pinMode(transferReadyPin, OUTPUT_LOW);
+	SetPinMode(transferReadyPin, OUTPUT_LOW);
 	HardwareSPI *dev = (HardwareSPI*)SPI::getSSPDevice(chan);
 	if (dev == nullptr) 
 	{
@@ -560,7 +304,7 @@ int TransferDataToFlash(HardwareSPI *dev)
 		}
 		if (blockCnt == 0)
 		{
-			if (!FlashEraseAll())
+			if (!FlashErase(FLASH_SIZE))
 			{
 				debugPrintf("Flash erase failed\n");
 				return -1;
@@ -568,7 +312,7 @@ int TransferDataToFlash(HardwareSPI *dev)
 		}
 		blockCnt++;
 		debugPrintf("Read block %d\n", blockCnt);
-		if (!FlashWrite(flashAddr, rxBuffer, sizeof(rxBuffer)))
+		if (!Flash::FlashWrite(flashAddr, rxBuffer, sizeof(rxBuffer)))
 		{
 			debugPrintf("Flash write failed\n");
 			return -1;
@@ -777,7 +521,7 @@ static constexpr SDCardConfig SDCardConfigs[] = {
 
 static bool MountSDCard(uint32_t config, FATFS *fs)
 {
-	debugPrintf("Mount SD card config %d\n", config);
+	//debugPrintf("Mount SD card config %d\n", config);
 	const SDCardConfig *conf = &SDCardConfigs[config];
 	if (conf->device != SSPSDIO)
 	{
@@ -810,6 +554,7 @@ bool SDTransferDataToFlash(FIL *imageFile)
 	UINT cnt;
 	// read first part of file and check it is valid
 	FRESULT rslt = f_read(imageFile, ioBuffer, sizeof(ioBuffer), &cnt);
+	size_t length = f_size(imageFile);
 	if (rslt != FR_OK || cnt != sizeof(ioBuffer))
 	{
 		debugPrintf("Initial read failed rslt %d cnt %u\n", rslt, cnt);
@@ -820,15 +565,18 @@ bool SDTransferDataToFlash(FIL *imageFile)
 		debugPrintf("Invalid firmware image\n");
 		return false;
 	}
+	debugPrintf("image length %d\n", length);
 	// we have what looks like a good image
-	if (!FlashEraseAll())
+	WriteLed(0, true);
+	if (!FlashErase(length))
 	{
 		debugPrintf("Flash erase failed\n");
 		return false;
 	}
 	uint32_t flashAddr = FirmwareFlashStart;
 	do {
-		if (!FlashWrite(flashAddr, ioBuffer, cnt))
+		WriteLed(0, (millis() & 32) != 0);
+		if (!Flash::FlashWrite(flashAddr, ioBuffer, cnt))
 		{
 			debugPrintf("Flash write failed\n");
 			return false;
@@ -860,7 +608,7 @@ void SDInstallFirmware()
 	alignas(4) static uint8_t sectorBuffer[512];
 	fs.win = sectorBuffer;
 # endif
-
+	WriteLed(0, true);
 	if (MountSDCard(SDTYPE, &fs))
 	{
 		debugPrintf("Mounted SD card\n");
@@ -880,6 +628,7 @@ void SDInstallFirmware()
 	}
 	else
 		debugPrintf("Failed to mount SD card\n");
+	WriteLed(0, false);
 }
 
 #if USE_CAN
@@ -899,7 +648,7 @@ constexpr uint32_t BlockReceiveTimeout = 2000;								// block receive timeout m
 void RequestFirmwareBlock(uint32_t fileOffset, uint32_t numBytes, CanMessageBuffer& buf)
 {
 	CanMessageFirmwareUpdateRequest * const msg = buf.SetupRequestMessageNoRid<CanMessageFirmwareUpdateRequest>(CanInterface::GetCanAddress(), CanId::MasterAddress);
-	SafeStrncpy(msg->boardType, "super5_h723", sizeof(msg->boardType));
+	SafeStrncpy(msg->boardType, BOARD_NAME, sizeof(msg->boardType));
 	msg->boardVersion = 0;
 	msg->bootloaderVersion = CanMessageFirmwareUpdateRequest::BootloaderVersion0;
 #if defined(CAN_IAP) && SAME5x
@@ -917,10 +666,6 @@ void RequestFirmwareBlock(uint32_t fileOffset, uint32_t numBytes, CanMessageBuff
 // Get a buffer of data from the host
 void GetBlock(uint32_t startingOffset, uint32_t& fileSize)
 {
-	WriteLed(0, true);
-	delay(25);														// flash the LED briefly to indicate we are requesting a new flash block
-	WriteLed(0, false);
-
 	CanMessageBuffer buf;
 	RequestFirmwareBlock(startingOffset, sizeof(ioBuffer), buf);	// ask for 16K or 64K from the starting offset
 
@@ -929,6 +674,7 @@ void GetBlock(uint32_t startingOffset, uint32_t& fileSize)
 	bool done = false;
 	do
 	{
+		WriteLed(0, (millis() & 32) != 0);
 		const bool ok = CanInterface::GetCanMessage(&buf);
 		if (ok)
 		{
@@ -977,7 +723,7 @@ void GetBlock(uint32_t startingOffset, uint32_t& fileSize)
 	} while (!done);
 }
 
-void CANInstallFirmware(CanAddress canAddress)
+void CANInstallFirmware(CanAddress canAddress, bool eraseAll)
 {
 	CanInterface::Init(canAddress);
 
@@ -990,57 +736,30 @@ void CANInstallFirmware(CanAddress canAddress)
 		if (bufferStartOffset == 0)
 		{
 			// First block received, so unlock and erase the firmware
-			debugPrintf("Erase flash\n");
-			if (!FlashEraseAll())
+			//debugPrintf("Erase flash length %d\n", fileSize);
+			WriteLed(0, true);
+			if (!FlashErase(eraseAll ? FLASH_SIZE : fileSize))
 			{
 				ReportErrorAndRestart("Failed to erase flash", FirmwareFlashErrorCode::eraseFailed);
 			}
 		}
 
-		WriteLed(0, true);
-
 		debugPrintf("Writing flash\n");
-#if defined(CAN_IAP) && SAME5x
-		// The file being fetched is in .uf2 format, so extract the data from the buffer and write it
-		// On the SAME5x we fetch 64kb at a time, so we have up to 128 blocks in the buffer
-		for (unsigned int block = 0; block < FlashBlockWriteSize/512 && bufferStartOffset + (512 * (block + 1)) <= fileSize; ++block)
-		{
-			const UF2_Block *const currentBlock = reinterpret_cast<const UF2_Block*>(blockBuffer + (512 * block));
-			if (   currentBlock->magicStart0 == UF2_Block::MagicStart0Val
-				&& currentBlock->magicStart1 == UF2_Block::MagicStart1Val
-				&& currentBlock->magicEnd == UF2_Block::MagicEndVal
-				&& currentBlock->payloadSize <= 256
-			   )
-			{
-				const uint32_t firmwareOffset = FirmwareFlashStart + (bufferStartOffset/2) + (block * 256);
-				if (!Flash::Write(firmwareOffset, 256, currentBlock->data))
-				{
-					ReportErrorAndRestart("Failed to write flash", FirmwareFlashErrorCode::writeFailed);
-				}
-			}
-			else
-			{
-				ReportErrorAndRestart("bad UF2 file", FirmwareFlashErrorCode::invalidFirmware);
-			}
-		}
-#else
-		// The file being fetched is in binary format, so we can write it directly
-		if (!FlashWrite(FirmwareFlashStart + bufferStartOffset, ioBuffer, sizeof(ioBuffer)))
+
+		if (!Flash::FlashWrite(FirmwareFlashStart + bufferStartOffset, ioBuffer, sizeof(ioBuffer)))
 		{
 			ReportErrorAndRestart("Failed to write flash", FirmwareFlashErrorCode::writeFailed);
 		}
-#endif
-		WriteLed(0, false);
-
 		bufferStartOffset += sizeof(ioBuffer);
 		if (bufferStartOffset >= fileSize)
 		{
 			break;
 		}
 	}
+	WriteLed(0, false);
 
 	// If we get here, firmware update is complete
-	debugPrintf("Update complete\n");
+	//debugPrintf("Update complete size %d\n", bufferStartOffset);
 	CanInterface::Shutdown();
 }
 #endif
@@ -1061,7 +780,7 @@ void SetParams(uint32_t val)
 	paramsPtr->sig2 = BOOTIAPParamSig;
 	paramsPtr->state = val;
 	paramsPtr->bootParam = 0;
-	FlushECC(paramsPtr, sizeof(BOOTIAPParams));
+	Cache::FlushECC(paramsPtr, sizeof(BOOTIAPParams));
 }
 
 // Execute the main firmware we call this just after a processor reset
@@ -1127,7 +846,7 @@ void AppPreInit() noexcept
 	else
 		debugPrintf("Current firmware is not valid\n");
 	SetParams(BootState::FirmwareRunning);
-	debugPrintf("Initial state is %d\n", (int)initialState);
+	debugPrintf("Initial state is %d CAN address %d\n", (int)initialState, (int)canAddress);
 	switch(initialState)
 	{
 	case BootState::FirmwareRunning:
@@ -1139,7 +858,7 @@ void AppPreInit() noexcept
 	case BootState::LoadCANFirmware:
 	case BootState::DoubleTapTest:
 #if USE_CAN
-		CANInstallFirmware(canAddress);
+		CANInstallFirmware(canAddress, initialState == BootState::DoubleTapTest);
 #endif
 		break;
 	default:
