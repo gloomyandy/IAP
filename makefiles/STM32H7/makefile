@@ -10,8 +10,12 @@ CORESTM_DIR ?= ./CoreN2G
 CONFIG ?= IAP_SPI_LOADER
 USE_SD ?= 0
 USE_CAN ?= 0
-
+CAN_READ ?= PB_8
+CAN_WRITE ?= PB_9
 BUILD ?= Debug
+BOARD_NAME ?= "expansion"
+LED_PIN ?= NoPin
+CAN_ADDRESS ?= 119
 
 GCC_PATH ?=
 
@@ -24,17 +28,21 @@ $(info Building RepRapFirmware IAP for STM32H7 based boards:)
 $(info  - Variant: $(VARIANT))
 $(info  - SD: $(USE_SD))
 $(info  - CAN: $(USE_CAN))
+$(info  - CAN Read: $(CAN_READ))
+$(info  - CAN Write: $(CAN_WRITE))
+$(info  - CAN Address: $(CAN_ADDRESS))
 
 ifeq ($(CONFIG),IAP_BOOT_LOADER)
 ifeq ($(SDTYPE),2)
-SPICONFIG ?= -DUSE_SDIO=1
+BUILDCONFIG = -DUSE_SDIO=1
 else
-SPICONFIG ?= -DUSE_SSP1=1 -DUSE_SSP2=1 -DUSE_SSP3=1
+BUILDCONFIG = -DUSE_SSP1=1 -DUSE_SSP2=1 -DUSE_SSP3=1
 endif
+BUILDCONFIG += -DBOARD_NAME=\"$(BOARD_NAME)\" -DLED_PIN=$(LED_PIN) -DCAN_ADDRESS=$(CAN_ADDRESS)
 LDNAME=iapbl
 VECTOR= -DVECT_TAB_OFFSET=0x0000
 else
-SPICONFIG = -DUSE_SSP1=1 -DUSE_SSP2=1 -DUSE_SSP3=1
+BUILDCONFIG = -DUSE_SSP1=1 -DUSE_SSP2=1 -DUSE_SSP3=1
 SDTYPE=255
 LDNAME=iapspi
 ifeq ($(VARIANT),STM32H723)
@@ -84,7 +92,7 @@ $(info - Output name: $(OUTPUT_NAME))
 #Flags common for Core in c and c++
 FLAGS  = -D__$(PROCESSOR)__ -D_XOPEN_SOURCE -DSTM32 -DSTM32H7 -D$(VARIANT)xx -DSTM32H7xx
 #Build config flags
-FLAGS += -D$(CONFIG)=1 -DSDTYPE=$(SDTYPE) $(SPICONFIG) -DUSE_SD=$(USE_SD) -DUSE_CAN=$(USE_CAN)
+FLAGS += -D$(CONFIG)=1 -DSDTYPE=$(SDTYPE) $(BUILDCONFIG) -DUSE_SD=$(USE_SD) -DUSE_CAN=$(USE_CAN) -DCAN_READ=$(CAN_READ) -DCAN_WRITE=$(CAN_WRITE)
 FLAGS += -DSUPPORT_USB=1 -DUSBCON -DUSBD_USE_CDC -DUSB_PRODUCT=\"RepRapFirmware\" $(VECTOR)
 FLAGS += -DHAL_RRF=1 -DNO_PRINTF_FLOAT -DSUPPORT_CAN=$(USE_CAN)
 FLAGS +=  -Wall -c -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mfp16-format=ieee -mcpu=cortex-m7 -mthumb -fno-math-errno -mno-unaligned-access -ffunction-sections -fdata-sections

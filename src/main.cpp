@@ -504,6 +504,7 @@ bool CheckValidFirmware(const DeviceVectors * const vectors)
 	return true;
 }
 
+#if USE_SD
 typedef struct {
 	SSPChannel device;
 	Pin pins[6];
@@ -630,6 +631,7 @@ void SDInstallFirmware()
 		debugPrintf("Failed to mount SD card\n");
 	WriteLed(0, false);
 }
+#endif
 
 #if USE_CAN
 constexpr uint32_t BlockReceiveTimeout = 2000;								// block receive timeout milliseconds
