@@ -607,7 +607,8 @@ void SDInstallFirmware()
 	FATFS fs;
 #if STM32H7
 	alignas(4) static uint8_t sectorBuffer[512];
-	fs.win = sectorBuffer;
+	//fs.win = sectorBuffer;
+	ff_set_win(&fs, sectorBuffer);
 # endif
 	WriteLed(0, true);
 	if (MountSDCard(SDTYPE, &fs))
