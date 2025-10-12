@@ -6,6 +6,7 @@ IAP_INCLUDES =
 ifeq ($(USE_SD),1)
 IAP_SRC_DIRS = Hardware/Spi
 IAP_SRC_DIRS += FatFS
+IAP_INCLUDES += -I$(IAP_SRC_BASE)/FatFS
 endif
 ifeq ($(USE_CAN),1)
 IAP_SRC_DIRS += CAN
