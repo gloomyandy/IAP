@@ -44,7 +44,7 @@ static_assert(Can0Config.IsValid());
 void CanInterface::Init(CanAddress defaultBoardAddress)
 {
 	CanTiming timing;
-	timing.SetDefaults_1Mb();									// we only support default timing when a main board is used as an expansion board
+	timing.SetDefaults(CanTiming::DefaultCanBitRate);		// we only support default timing when a main board is used as an expansion board
 
 	// Set up the CAN pins
 
