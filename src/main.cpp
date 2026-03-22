@@ -247,7 +247,7 @@ HardwareSPI *InitSPI(SSPChannel chan, Pin clk, Pin miso, Pin mosi, Pin cs, Pin t
 	transferReadyPin = tfrRdy;
 	transferReadyHigh = false;
 	SetPinMode(transferReadyPin, OUTPUT_LOW);
-	HardwareSPI *dev = (HardwareSPI*)SPI::getSSPDevice(chan);
+	HardwareSPI *dev = (HardwareSPI*)SPI::getSPIDevice(chan);
 	if (dev == nullptr) 
 	{
 		debugPrintf("Failed to get SPI device %d\n", (int)chan);
@@ -435,7 +435,8 @@ const SBCIAPParams *const GetParams()
 #include <ff.h>
 #include <sd_mmc.h>
 #include <HardwareSDIO.h>
-#include <SharedSpiDevice.h>
+#include <SPI/SharedSpiDevice.h>
+#include <Platform.h>
 #endif
 #if USE_CAN
 #include <CAN/CanInterface.h>
@@ -519,6 +520,7 @@ static constexpr SDCardConfig SDCardConfigs[] = {
 	{SSP3, {PC_10, PC_11, PC_12, PA_15, NoPin, NoPin}}, // BTT BX
 	{SSP2, {PB_13, PB_14, PB_15, PB_12, NoPin, NoPin}}, // BTT kraken?
 };
+SharedSpiDevice *_ecv_null Platform::SharedSpiDevices[NumSPIDevices];
 
 static bool MountSDCard(uint32_t config, FATFS *fs)
 {
@@ -526,8 +528,10 @@ static bool MountSDCard(uint32_t config, FATFS *fs)
 	const SDCardConfig *conf = &SDCardConfigs[config];
 	if (conf->device != SSPSDIO)
 	{
-		SharedSpiDevice::Init();
-		SPI::getSSPDevice(conf->device)->initPins(conf->pins[0], conf->pins[1], conf->pins[2], NvicPrioritySpi);
+		SPI::getSPIDevice(conf->device)->initPins(conf->pins[0], conf->pins[1], conf->pins[2], NvicPrioritySpi);
+		SpiParameters params;
+		params.instanceNumber = conf->device;
+		Platform::SetSharedSpiDevice(conf->device, *(new SharedSpiDevice(params)));
 		sd_mmc_setSSPChannel(0, conf->device, conf->pins[3]);
 		sd_mmc_reinit_slot(0, NoPin, 10000000);
 	}
@@ -545,7 +549,7 @@ static bool MountSDCard(uint32_t config, FATFS *fs)
 
 	// mount failed reset things
 	if (conf->device != SSPSDIO)
-		((HardwareSPI *)(SPI::getSSPDevice(conf->device)))->disable();
+		((HardwareSPI *)(SPI::getSPIDevice(conf->device)))->disable();
 	sd_mmc_setSSPChannel(0, SSPNONE, NoPin);
 	return false;
 }
