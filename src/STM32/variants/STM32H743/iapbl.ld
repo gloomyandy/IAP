@@ -4,9 +4,6 @@
 /* Entry Point */
 ENTRY(Reset_Handler)
 
-_Min_Heap_Size = 0x200;	/* required amount of heap  */
-_Min_Stack_Size = 0x400;	/* required amount of stack */
-
 /* Memories definition */
 MEMORY
 {
@@ -132,18 +129,18 @@ SECTIONS
     . = ALIGN(4);
     _ebss = .;         /* define a global symbol at bss end */
     __bss_end__ = _ebss;
-  } >RAM_D1
-
-  /* User_heap_stack section, used to check that there is enough "RAM_D1" Ram  type memory left */
-  ._user_heap_stack :
-  {
     . = ALIGN(8);
     PROVIDE ( end = . );
     PROVIDE ( _end = . );
-    . = . + _Min_Heap_Size;
-    . = . + _Min_Stack_Size;
-    . = ALIGN(8);
   } >RAM_D1
+
+  /* .stack_dummy section doesn't contains any symbols. It is only
+      used for linker to calculate size of stack sections, and assign
+      values to stack symbols later */
+  .stack_dummy (NOLOAD) :
+  {
+      KEEP (*(.stack*))
+  } > RAM_D1
 
   .ram_nocache2 (NOLOAD) :
   {
@@ -177,8 +174,13 @@ SECTIONS
   PROVIDE(_nocache_ram_end = ORIGIN(RAM_D2) + LENGTH(RAM_D2));
   PROVIDE(_nocache2_ram_start = ORIGIN(RAM_D1NC));
   PROVIDE(_nocache2_ram_end = ORIGIN(RAM_D1NC) + LENGTH(RAM_D1NC));
+  /* Set stack top to end of ram, and stack limit move down by
+   * size of stack_dummy section */
   /* We reserve a small area at the top of the stack for communications */
-  PROVIDE(_estack = ORIGIN(RAM_D1) + LENGTH(RAM_D1) - 64);
+  __StackTop = ORIGIN(RAM_D1) + LENGTH(RAM_D1) - 64;
+  __StackLimit = __StackTop - SIZEOF(.stack_dummy);
+  PROVIDE(_sstack = __StackLimit);
+  PROVIDE(_estack = __StackTop);
   PROVIDE(_firmware_crc = _firmware_end);
 
 }

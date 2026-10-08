@@ -32,6 +32,9 @@
 // The characters after the last space must be the firmware version in standard format, e.g. "3.3.0" or "3.4.0beta.4". The firmware build date/time is not included.
 extern const char VersionText[] = FIRMWARE_NAME " version " VERSION;
 
+// Define the system stack. The stack doesn't actually live here, instead the linker script uses this section to define the stack start and end symbols.
+uint32_t dummySystemStack[SystemStackSize] __attribute__ ((section (".stack"), used));
+
 extern "C" void SysTick_Handler(void)
 {
 	CoreSysTick();
