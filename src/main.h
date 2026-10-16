@@ -1,5 +1,3 @@
-#include <SerialCDC.h>
-#define SERIAL_MAIN_DEVICE  serialUSB
 const NvicPriority NvicPrioritySpi = 8;
 const NvicPriority NvicPrioritySDIO = 8;
 
@@ -27,7 +25,7 @@ constexpr size_t FLASH_SIZE = (FLASH_END + 1 - FLASH_BASE);
 #error "unknown mcu"
 #endif
 
-#define VERSION "1.1.0"
+#define VERSION "1.2.0"
 
 constexpr size_t IAP_BUFFER_SIZE = 2048;
 constexpr char firmwarePath[] = "0:/firmware.bin";

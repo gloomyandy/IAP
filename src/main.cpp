@@ -14,12 +14,43 @@
 #include <General/StringFunctions.h>
 #include <Flash.h>
 #include "iapparams.h"
+#include <SerialCDC.h>
+
 // Define replacement standard library functions
 #include <syscalls.h>
-//#define USB_DEBUG 1
+#define USB_DEBUG 0
+#define UART_DEBUG 1
+#if USB_DEBUG
+#include <SerialCDC.h>
+SerialCDC serialUSB;
+#define SERIAL_DEBUG_DEVICE  serialUSB
+static char formatBuffer[100];
+#endif
+#if UART_DEBUG
+#include <AsyncSerial.h>
+#ifndef UART_TX_PIN
+#define UART_TX_PIN PA_9
+#endif
+#ifndef UART_RX_PIN
+#define UART_RX_PIN PA_10
+#endif
+constexpr UartParameters Serial0Params =
+{
+    .instanceNumber = 0,
+    .numRxSlots = 512,
+    .numTxSlots = 512
+};
+AsyncSerial serialUART(Serial0Params);
+#define SERIAL_DEBUG_DEVICE  serialUART
+static char formatBuffer[100];
+#endif
+
+
+
 #ifndef IAP_BOOT_LOADER
 #define IAP_BOOT_LOADER 1
 #endif
+#define LED_PIN PA_0
 // Diagnostic LED if available on this board
 #ifndef LED_PIN
 #  define LED_PIN NoPin
@@ -46,38 +77,33 @@ void WWDG_IRQHandler() noexcept
 {
 }
 
-#if USB_DEBUG
-SerialCDC serialUSB;
-static char formatBuffer[100];
-#endif
-
 // Write message to USB
 void MessageF(const char *fmt, ...) noexcept
 {
-#if USB_DEBUG
+#if USB_DEBUG || UART_DEBUG
 	va_list vargs;
 	va_start(vargs, fmt);
 	SafeVsnprintf(formatBuffer, ARRAY_SIZE(formatBuffer), fmt, vargs);
 	va_end(vargs);
-	SERIAL_MAIN_DEVICE.print(formatBuffer);
+	SERIAL_DEBUG_DEVICE.print(formatBuffer);
 #endif
 }
 
 extern "C" void debugPrintf(const char *fmt, ...) noexcept
 {
-#if USB_DEBUG
+#if USB_DEBUG || UART_DEBUG
 	va_list vargs;
 	va_start(vargs, fmt);
 	SafeVsnprintf(formatBuffer, ARRAY_SIZE(formatBuffer), fmt, vargs);
 	va_end(vargs);
-	SERIAL_MAIN_DEVICE.print(formatBuffer);
+	SERIAL_DEBUG_DEVICE.print(formatBuffer);
 #endif
 }
 
 void debugFlush()
 {
-#if USB_DEBUG
-	SERIAL_MAIN_DEVICE.flush();
+#if USB_DEBUG || UART_DEBUG
+	SERIAL_DEBUG_DEVICE.flush();
 #endif
 }
 
@@ -132,6 +158,22 @@ void AppInit() noexcept
 	HAL_NVIC_DisableIRQ(USART3_IRQn);
 }
 
+void ResetUSB()
+{
+	// Make sure that the USB hardware is not in some strange mode
+#if defined(USE_USB_HS_IN_FS)
+	__HAL_RCC_USB_OTG_HS_FORCE_RESET();
+	// Brief delay or NOPs
+	for (uint32_t i = 0; i < 1000; i++) { __NOP(); }
+	__HAL_RCC_USB_OTG_HS_RELEASE_RESET();
+#else
+	__HAL_RCC_USB_OTG_FS_FORCE_RESET();
+	// Brief delay or NOPs
+	for (uint32_t i = 0; i < 1000; i++) { __NOP(); }
+	__HAL_RCC_USB_OTG_FS_RELEASE_RESET();
+#endif
+}
+
 void Init(bool watchdog) noexcept
 {
 	// Make sue Arm ints are enabled
@@ -154,12 +196,18 @@ void Init(bool watchdog) noexcept
 	Cache::Disable();				// Make sure it is off to avoid DMA issues
 	IrqEnable();
 #if USB_DEBUG
-	SERIAL_MAIN_DEVICE.begin(9600);
+	ResetUSB();
+	SERIAL_DEBUG_DEVICE.begin(9600);
+	delay(5000);
+#elif UART_DEBUG
+	SERIAL_DEBUG_DEVICE.Configure(UART_RX_PIN, UART_TX_PIN);
+	SERIAL_DEBUG_DEVICE.begin(9600);
 	delay(5000);
 #else
 	delay(500);
 #endif
 	debugPrintf("IAP running....\n");
+	debugFlush();
 	// enable diag led
 	if (LED_PIN != NoPin)
 	{
@@ -225,6 +273,10 @@ struct FlashVerifyRequest
 };
 const uint32_t TransferCompleteDelay = 400;								// DCS waits 500ms when the firmware image has been transferred
 const uint32_t TransferTimeout = 2000;									// How long to wait before timing out
+const uint8_t ready = 0x1A;
+const uint8_t verifyOK = 0x0c;
+const uint8_t verifyError = 0xff;
+
 #if STM32H7
 # define __nocache		__attribute__((section(".ram_nocache")))
 # define __nocache2		__attribute__((section(".ram_nocache2")))
@@ -285,7 +337,7 @@ spi_status_t SPITransfer(HardwareSPI *dev, const uint8_t *tx_data, uint8_t *rx_d
 int TransferDataToFlash(HardwareSPI *dev)
 {
 	//SBC expects 0x1a to be sent back
-	memset(txBuffer, 0x1a, sizeof(txBuffer));
+	memset(txBuffer, ready, sizeof(txBuffer));
 	uint32_t retryCnt = 0;
 	uint32_t blockCnt = 0;
 	uint32_t flashAddr = FirmwareFlashStart;
@@ -329,7 +381,7 @@ int TransferDataToFlash(HardwareSPI *dev)
 	}
 }
 
-uint16_t CRC16(const char *buffer, size_t length) noexcept
+uint16_t CRC16(const uint8_t *buffer, size_t length, const uint16_t seed = 65535) noexcept
 {
 	static const uint16_t crc16_table[] =
 	{
@@ -367,7 +419,7 @@ uint16_t CRC16(const char *buffer, size_t length) noexcept
 		0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040
 	};
 
-	uint16_t Crc = 65535;
+	uint16_t Crc = seed;
 	uint16_t x;
 	for (size_t i = 0; i < length; i++)
 	{
@@ -388,18 +440,18 @@ bool ProcessChecksum(HardwareSPI *dev, int cnt) noexcept
 		return false;
 	}
 	const FlashVerifyRequest *request = reinterpret_cast<const FlashVerifyRequest*>(rxBuffer);
-	const uint16_t actualCRC = CRC16((char *)FirmwareFlashStart, request->firmwareLength);
+	const uint16_t actualCRC = CRC16((const uint8_t *)FirmwareFlashStart, request->firmwareLength);
 	debugPrintf("Got verify request flash len %d CRC %x actual CRC %x\n", request->firmwareLength, request->crc16, (unsigned)actualCRC);
 	// send response
 	if (request->crc16 == actualCRC)
-		txBuffer[0] = 0x0c;
+		txBuffer[0] = verifyOK;
 	else
-		txBuffer[0] = 0xff;
+		txBuffer[0] = verifyError;
 	SPITransfer(dev,txBuffer, rxBuffer, 1, TransferTimeout);
 	return true;
 }
 
-const SBCIAPParams *const GetParams()
+const SBCIAPParams *const GetParams() noexcept
 {
 	const SBCIAPParams *const paramsPtr = (const SBCIAPParams *const) GetParamsPtr();
 	if (paramsPtr->sig1 != SBCIAPParamSig || paramsPtr->sig2 != SBCIAPParamSig)
@@ -411,10 +463,214 @@ const SBCIAPParams *const GetParams()
 		return paramsPtr;
 }	
 
+SerialCDC serialUSB;
+
+void InitUSB() noexcept
+{
+	ResetUSB();
+	serialUSB.begin(9600);
+}
+
+bool WaitUSBReady(uint32_t timeout) noexcept
+{
+	// wait for SBC to open the USB device
+	uint32_t start = millis();
+	while(!serialUSB.IsConnected())
+	{
+		if (millis() - start > timeout)
+		{
+			debugPrintf("Wait connect timeout\n");
+			return false;
+		}
+		delay(1);
+	}
+	debugPrintf("USB ready\n");
+	return true;
+}
+
+bool ReadUSB(uint8_t *buffer, uint32_t len) noexcept
+{
+	uint32_t start = millis();
+	uint32_t offset = 0;
+	while (offset < len)
+	{
+		uint32_t cnt = serialUSB.readBytes((char *)(buffer + offset), len - offset);
+		//debugPrintf("read returns %d\n", cnt);
+		if (cnt > 0) offset += cnt;
+		if (millis() - start > TransferTimeout)
+		{
+			debugPrintf("Read timeout wanted %d got %d\n", len, offset);
+			return false;
+		}
+		delay(1);
+	}
+	return true;
+}
+
+bool WriteUSB(const uint8_t *buffer, uint32_t len) noexcept
+{
+	uint32_t start = millis();
+	uint32_t offset = 0;
+	while (offset < len)
+	{
+		uint32_t cnt = serialUSB.write((buffer + offset), len - offset);
+		if (cnt > 0) offset += cnt;
+		if (millis() - start > TransferTimeout)
+		{
+			debugPrintf("Write timeout wanted %d got %d\n", len, offset);
+			return false;
+		}
+		delay(1);
+	}
+	return true;
+}
+
+int32_t DoUSBHandshake()
+{
+	// Get SBC header (including length) and say we are ready
+	static const uint8_t marker[] = {'I', 'A', 'P', 'R'};
+	uint8_t header[8];
+	if (!ReadUSB(header, sizeof(header)))
+	{
+		debugPrintf("Failed to read header\n");
+		return -1;
+	}
+	// Check to see if it looks valid
+	if (memcmp(header, marker, sizeof(marker)) != 0)
+	{
+		debugPrintf("ERROR: invalid USB handshake marker");
+		return -1;
+	}
+	int32_t firmwareLength = (int32_t)header[4] | ((int32_t)header[5] << 8) | ((int32_t)header[6] << 16) | ((int32_t)header[7] << 24);
+	// send handshake response
+	if (!WriteUSB(marker, sizeof(marker)))
+	{
+		debugPrintf("Failed to write handshake\n");
+		return -1;
+	}
+	debugPrintf("Expected length %d\n", firmwareLength);
+	return firmwareLength;
+}
+
+
+extern uint32_t USBReadOverrun;
+void FlashFromUSB() noexcept
+{
+	InitUSB();
+	if (WaitUSBReady(20000))
+	{
+		int32_t firmwareLen = DoUSBHandshake();
+		if (firmwareLen > 0)
+		{
+			uint32_t flashAddr = FirmwareFlashStart;
+			int32_t currentLen = 0;
+			debugPrintf("About to erase\n");
+			debugFlush();
+			if (!FlashErase(FLASH_SIZE))
+			{
+				debugPrintf("Flash erase failed\n");
+				debugFlush();
+				return;
+			}
+			debugPrintf("After erase\n");
+			debugFlush();
+			while (currentLen < firmwareLen)
+			{
+				if (!WriteUSB(&ready, sizeof(ready)))
+				{
+					debugPrintf("Write ready failed\n");
+					break;
+				}
+				if (!ReadUSB(rxBuffer, sizeof(rxBuffer)))
+				{
+					debugPrintf("Read failed\n");
+					break;
+				}
+#if 1
+debugPrintf("Flash %x\n", flashAddr);
+debugFlush();
+				if (!Flash::FlashWrite(flashAddr, rxBuffer, sizeof(rxBuffer)))
+				{
+					debugPrintf("Flash write failed\n");
+					break;
+				}
+debugPrintf("After flash\n");
+debugFlush();
+#endif
+				if (!FlashVerify(flashAddr, rxBuffer, sizeof(rxBuffer)))
+				{
+					debugPrintf("Flash verify failed\n");
+					break;
+				}
+				currentLen += sizeof(rxBuffer);
+				flashAddr += sizeof(rxBuffer);
+				debugPrintf("Read %d bytes\n", currentLen);
+				debugFlush();
+			}
+			debugPrintf("usb read overrun %d\n", USBReadOverrun);
+			debugFlush();
+			if (currentLen >= firmwareLen)
+			{
+				uint8_t response = verifyError;
+				// ask for verify data
+				if (WriteUSB(&ready, sizeof(ready)))
+				{
+					FlashVerifyRequest verifyData;
+					if (ReadUSB((uint8_t *)&verifyData, sizeof(verifyData)))
+					{
+						const uint16_t actualCRC = CRC16((const uint8_t *)FirmwareFlashStart, verifyData.firmwareLength);
+						debugPrintf("Got verify request flash len %d CRC %x actual CRC %x\n", verifyData.firmwareLength, verifyData.crc16, (unsigned)actualCRC);
+						debugFlush();
+						if (verifyData.crc16 == actualCRC)
+							response = verifyOK;
+						debugPrintf("verify complete\n");
+						debugFlush();
+					}
+				}
+				WriteUSB(&response, sizeof(response));
+			}
+		}
+	}
+	debugPrintf("IAP complete\n");
+	debugFlush();
+	serialUSB.flush();
+	serialUSB.end();
+	delay(1000);
+	ResetUSB();
+}
+
 // Application entry point
 [[noreturn]] void AppMain() noexcept
 {
 	Init(true);
+	FlashFromUSB();
+#if 0
+	for(int i = 0; i < 30; i++)
+	{
+		WriteLed(0, true);
+		delay(500);
+		WriteLed(0, false);
+		delay(500);
+	}
+	for(int i=0; i <100; i++)
+	{
+	debugPrintf("IAP closing down....\n");
+	delay(10);
+	}
+	//debugFlush();	
+	delay(1000);
+	//SERIAL_MAIN_DEVICE.end();
+	delay(10000);
+	for(int i = 0; i < 30; i++)
+	{
+		WriteLed(0, true);
+		delay(500);
+		WriteLed(0, false);
+		delay(500);
+	}
+#endif
+	delay(1000);
+	ResetProcessor();
 
 	const SBCIAPParams *const params = GetParams();
 	if (params != nullptr)
