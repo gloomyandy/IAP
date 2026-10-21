@@ -7,8 +7,14 @@ const NvicPriority NvicPrioritySDIO = 8;
 #if STM32H7
 constexpr size_t FirmwareFlashStart = 0x8020000;
 constexpr size_t FLASH_ADDR = FLASH_BASE;
-#if IAP_SPI_LOADER
+#if IAP_SPI_USB_LOADER
+#define FIRMWARE_NAME "STM32H7 SPI/USB loader"
+#define IAP_SPI_LOADER 1
+#define IAP_USB_LOADER 1
+#elif IAP_SPI_LOADER
 #define FIRMWARE_NAME "STM32H7 SPI loader"
+#elif IAP_USB_LOADER
+#define FIRMWARE_NAME "STM32H7 USB loader"
 #else
 #define FIRMWARE_NAME  BOARD_NAME " Boot loader IOMode:" STRINGIFY(SDTYPE) " S:" STRINGIFY(USE_SD) " C:" STRINGIFY(USE_CAN)
 #endif
